@@ -1,0 +1,96 @@
+{
+  "name": "tc-agent",
+  "displayName": "TC Agent",
+  "description": "VSCode plugin for OP-TEE and Keystone TEE development",
+  "version": "0.1.0",
+  "publisher": "tc-agent",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:tcAgent.openChat"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "tcAgent.openChat",
+        "title": "TC Agent: Open Chat"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "tcAgent",
+          "title": "TC Agent",
+          "icon": "$(robot)"
+        }
+      ]
+    },
+    "views": {
+      "tcAgent": [
+        {
+          "type": "webview",
+          "id": "tcAgent.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "TC Agent",
+      "properties": {
+        "tcAgent.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:8000",
+          "description": "Agent server URL"
+        },
+        "tcAgent.wsUrl": {
+          "type": "string",
+          "default": "ws://localhost:8000/ws",
+          "description": "Agent WebSocket URL"
+        },
+        "tcAgent.defaultMode": {
+          "type": "string",
+          "default": "ask",
+          "enum": [
+            "ask",
+            "plan",
+            "code"
+          ],
+          "description": "Default mode"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/glob": "^8.1.0",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "20.x",
+    "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.5.10",
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0",
+    "@vscode/test-electron": "^2.3.8",
+    "eslint": "^8.56.0",
+    "glob": "^10.3.10",
+    "mocha": "^10.2.0",
+    "typescript": "^5.3.3",
+    "@vscode/vsce": "^2.22.0"
+  },
+  "dependencies": {
+    "axios": "^1.6.5",
+    "ws": "^8.16.0"
+  }
+}

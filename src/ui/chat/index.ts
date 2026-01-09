@@ -1,0 +1,1 @@
+export { ChatViewProvider } from './ChatViewProvider';
