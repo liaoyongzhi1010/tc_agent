@@ -5,12 +5,34 @@ import json
 
 from app.schemas.models import CodeExecuteRequest
 from app.infrastructure.logger import get_logger
+from app.core.llm import LLMFactory
+from app.core.agent import ReActAgent
+from app.tools.registry import ToolRegistry
 
 router = APIRouter()
 logger = get_logger("tc_agent.api.code")
 
 # 引用plan模块的workflows
 from app.api.plan import workflows
+
+# 初始化工具注册表
+_tool_registry: ToolRegistry = None
+
+
+def get_tool_registry() -> ToolRegistry:
+    """获取工具注册表单例"""
+    global _tool_registry
+    if _tool_registry is None:
+        _tool_registry = ToolRegistry()
+        _tool_registry.load_all_tools()
+    return _tool_registry
+
+
+def get_react_agent() -> ReActAgent:
+    """创建ReAct Agent"""
+    llm = LLMFactory.create_from_config()
+    tools = get_tool_registry()
+    return ReActAgent(llm, tools)
 
 
 @router.websocket("/execute/{workflow_id}")
@@ -31,44 +53,25 @@ async def execute_workflow(websocket: WebSocket, workflow_id: str):
             await websocket.close()
             return
 
-        # TODO: 初始化ReAct Agent并执行
-        # 目前发送占位消息
-        for i, step in enumerate(workflow.steps):
-            await websocket.send_json(
-                {"type": "step_start", "step_index": i, "step": step.model_dump()}
-            )
+        # 创建并运行ReAct Agent
+        agent = get_react_agent()
 
-            # 模拟思考过程
-            await websocket.send_json(
-                {"type": "thought", "data": {"content": f"正在分析步骤: {step.description}"}}
-            )
-
-            # 模拟动作
-            await websocket.send_json(
-                {
-                    "type": "action",
-                    "data": {"tool": "placeholder", "input": {"step": step.description}},
-                }
-            )
-
-            # 模拟观察
-            await websocket.send_json(
-                {"type": "observation", "data": {"content": f"步骤 {step.id} 执行完成"}}
-            )
-
-            await websocket.send_json({"type": "step_complete", "step_index": i})
-
-        await websocket.send_json(
-            {"type": "workflow_complete", "message": "所有步骤执行完成"}
-        )
+        async for event in agent.run(workflow.task, workflow):
+            await websocket.send_json({"type": event.type, "data": event.data})
 
     except WebSocketDisconnect:
         logger.info("WebSocket断开连接", workflow_id=workflow_id)
     except Exception as e:
         logger.error("执行出错", error=str(e))
-        await websocket.send_json({"type": "error", "message": str(e)})
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
     finally:
-        await websocket.close()
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @router.post("/execute-direct")
@@ -80,11 +83,26 @@ async def execute_direct(body: CodeExecuteRequest):
     logger.info("直接执行任务", task=body.task[:50])
 
     async def generate():
-        # TODO: 使用ReAct Agent执行任务
-        # 目前返回占位消息
-        yield f"data: {json.dumps({'type': 'thought', 'data': {'content': f'分析任务: {body.task}'}})}\n\n"
-        yield f"data: {json.dumps({'type': 'action', 'data': {'tool': 'placeholder', 'input': {}}})}\n\n"
-        yield f"data: {json.dumps({'type': 'observation', 'data': {'content': '执行完成'}})}\n\n"
-        yield f"data: {json.dumps({'type': 'complete', 'data': {'answer': 'ReAct Agent尚未完全集成'}})}\n\n"
+        try:
+            agent = get_react_agent()
+
+            async for event in agent.run(body.task):
+                yield f"data: {json.dumps({'type': event.type, 'data': event.data}, ensure_ascii=False)}\n\n"
+
+        except Exception as e:
+            logger.error("执行出错", error=str(e))
+            yield f"data: {json.dumps({'type': 'error', 'data': {'message': str(e)}}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@router.get("/tools")
+async def list_tools():
+    """列出所有可用工具"""
+    tools = get_tool_registry()
+    return {
+        "tools": [
+            {"name": t.name, "description": t.description, "schema": t.get_schema()}
+            for t in tools.get_all_tools()
+        ]
+    }

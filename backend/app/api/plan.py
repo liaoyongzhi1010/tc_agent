@@ -1,15 +1,16 @@
 """Plan模式API - 任务规划"""
 from fastapi import APIRouter, HTTPException
-import uuid as uuid_lib
 
 from app.schemas.models import (
     PlanInitRequest,
     PlanRefineRequest,
     PlanConfirmRequest,
     Workflow,
-    WorkflowStep,
 )
 from app.infrastructure.logger import get_logger
+from app.infrastructure.vector_store import get_vector_store
+from app.core.llm import LLMFactory
+from app.core.workflow import WorkflowManager
 
 router = APIRouter()
 logger = get_logger("tc_agent.api.plan")
@@ -18,24 +19,24 @@ logger = get_logger("tc_agent.api.plan")
 workflows: dict[str, Workflow] = {}
 
 
+async def get_workflow_manager() -> WorkflowManager:
+    """获取WorkflowManager实例"""
+    llm = LLMFactory.create_from_config()
+    try:
+        vector_store = await get_vector_store()
+        retriever = vector_store.get_retriever("all")
+    except Exception:
+        retriever = None
+    return WorkflowManager(llm, retriever)
+
+
 @router.post("/init")
 async def init_plan(body: PlanInitRequest):
     """初始化计划,生成workflow"""
     logger.info("初始化Plan", task=body.task[:50])
 
-    # TODO: 集成RAG检索和LLM生成workflow
-    # 目前生成占位workflow
-    workflow = Workflow(
-        id=str(uuid_lib.uuid4()),
-        task=body.task,
-        steps=[
-            WorkflowStep(id="1", description="分析任务需求"),
-            WorkflowStep(id="2", description="生成代码框架"),
-            WorkflowStep(id="3", description="实现核心逻辑"),
-            WorkflowStep(id="4", description="测试和验证"),
-        ],
-        status="draft",
-    )
+    manager = await get_workflow_manager()
+    workflow = await manager.generate_workflow(body.task, body.context)
     workflows[workflow.id] = workflow
 
     logger.info("Plan生成完成", workflow_id=workflow.id, steps_count=len(workflow.steps))
@@ -56,8 +57,10 @@ async def refine_plan(body: PlanRefineRequest):
     workflow = workflows[body.workflow_id]
     logger.info("修改Plan", workflow_id=body.workflow_id, instruction=body.instruction[:50])
 
-    # TODO: 使用LLM根据指令修改步骤
-    # 目前返回原步骤
+    manager = await get_workflow_manager()
+    workflow = await manager.refine_workflow(workflow, body.instruction)
+    workflows[body.workflow_id] = workflow
+
     return {
         "workflow_id": workflow.id,
         "steps": [s.model_dump() for s in workflow.steps],
