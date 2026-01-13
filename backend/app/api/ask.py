@@ -81,6 +81,9 @@ async def ask_question_stream(request: Request, body: AskRequest):
 
     async def generate():
         try:
+            # 发送检索状态
+            yield f"data: {json.dumps({'type': 'status', 'data': '正在检索相关文档...'}, ensure_ascii=False)}\n\n"
+
             # 获取向量存储
             vector_store = await get_vector_store()
             retriever = vector_store.get_retriever(body.knowledge_type or "all")
@@ -94,6 +97,9 @@ async def ask_question_stream(request: Request, body: AskRequest):
                 for d in docs
             ]
             yield f"data: {json.dumps({'type': 'sources', 'data': sources_data}, ensure_ascii=False)}\n\n"
+
+            # 发送生成状态
+            yield f"data: {json.dumps({'type': 'status', 'data': '正在生成回答...'}, ensure_ascii=False)}\n\n"
 
             # 构建上下文
             if docs:

@@ -29,6 +29,48 @@ export class BackendManager extends EventEmitter {
         return config.get<string>('pythonPath') || 'python3';
     }
 
+    private getBackendEnv(): NodeJS.ProcessEnv {
+        const config = vscode.workspace.getConfiguration('tcAgent');
+        const env: NodeJS.ProcessEnv = {
+            ...process.env,
+            PYTHONUNBUFFERED: '1',
+            TC_AGENT_LLM_PROVIDER: config.get<string>('llm.provider') || 'qwen',
+        };
+
+        // 传递API Keys
+        const qwenKey = config.get<string>('llm.qwenApiKey');
+        if (qwenKey) {
+            env.TC_AGENT_QWEN_API_KEY = qwenKey;
+        }
+
+        const zhipuKey = config.get<string>('llm.zhipuApiKey');
+        if (zhipuKey) {
+            env.TC_AGENT_ZHIPU_API_KEY = zhipuKey;
+        }
+
+        const doubaoKey = config.get<string>('llm.doubaoApiKey');
+        if (doubaoKey) {
+            env.TC_AGENT_DOUBAO_API_KEY = doubaoKey;
+        }
+
+        const doubaoEndpoint = config.get<string>('llm.doubaoEndpointId');
+        if (doubaoEndpoint) {
+            env.TC_AGENT_DOUBAO_ENDPOINT_ID = doubaoEndpoint;
+        }
+
+        const llmModel = config.get<string>('llm.model');
+        if (llmModel) {
+            env.TC_AGENT_LLM_MODEL = llmModel;
+        }
+
+        const embeddingMode = config.get<string>('embedding.mode');
+        if (embeddingMode) {
+            env.TC_AGENT_EMBEDDING_MODE = embeddingMode;
+        }
+
+        return env;
+    }
+
     async start(): Promise<void> {
         if (this.ready) {
             console.log('Backend already running');
@@ -36,7 +78,7 @@ export class BackendManager extends EventEmitter {
         }
 
         const pythonPath = this.getPythonPath();
-        const backendPath = path.join(this.context.extensionPath, 'backend');
+        const backendPath = path.join(this.context.extensionPath, '..', 'backend');
 
         return new Promise((resolve, reject) => {
             this.outputChannel.appendLine(`Starting backend with Python: ${pythonPath}`);
@@ -47,7 +89,7 @@ export class BackendManager extends EventEmitter {
                 ['-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', String(this.port)],
                 {
                     cwd: backendPath,
-                    env: { ...process.env, PYTHONUNBUFFERED: '1' }
+                    env: this.getBackendEnv()
                 }
             );
 

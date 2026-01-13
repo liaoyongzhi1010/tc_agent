@@ -6,14 +6,17 @@
 import * as vscode from 'vscode';
 import { BackendManager } from './services/BackendManager';
 import { MainViewProvider } from './views/MainViewProvider';
+import { ApiClient } from './services/ApiClient';
 
 let backendManager: BackendManager;
+let apiClient: ApiClient;
 
 export async function activate(context: vscode.ExtensionContext) {
     console.log('TC Agent is activating...');
 
     // 启动Python后端
     backendManager = new BackendManager(context);
+    apiClient = new ApiClient(backendManager);
 
     // 注册主视图
     const mainViewProvider = new MainViewProvider(context, backendManager);
@@ -60,6 +63,67 @@ export async function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('tcAgent.stopBackend', () => {
             backendManager.stop();
             vscode.window.showInformationMessage('TC Agent 后端已停止');
+        }),
+        vscode.commands.registerCommand('tcAgent.addToKnowledge', async (uri?: vscode.Uri) => {
+            try {
+                // 获取文件路径
+                let filePath: string | undefined;
+
+                if (uri) {
+                    // 从资源管理器右键菜单
+                    filePath = uri.fsPath;
+                } else {
+                    // 从编辑器
+                    const editor = vscode.window.activeTextEditor;
+                    if (editor) {
+                        filePath = editor.document.uri.fsPath;
+                    }
+                }
+
+                if (!filePath) {
+                    vscode.window.showWarningMessage('请选择要添加的文件');
+                    return;
+                }
+
+                // 选择知识库类型
+                const collectionType = await vscode.window.showQuickPick(
+                    [
+                        { label: '代码知识库', value: 'code', description: '用于代码相关问答' },
+                        { label: '文档知识库', value: 'text', description: '用于文档相关问答' }
+                    ],
+                    { placeHolder: '选择知识库类型' }
+                );
+
+                if (!collectionType) {
+                    return;
+                }
+
+                // 调用后端API添加文件
+                const baseUrl = backendManager.getBaseUrl();
+                const response = await fetch(`${baseUrl}/knowledge/add-directory`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        path: filePath,
+                        collection: collectionType.value,
+                        file_patterns: ['*']
+                    })
+                });
+
+                if (response.ok) {
+                    const data = await response.json() as { documents_added?: number };
+                    vscode.window.showInformationMessage(
+                        `已添加到${collectionType.label}，共 ${data.documents_added || 1} 个文档`
+                    );
+                } else {
+                    throw new Error(`API请求失败: ${response.statusText}`);
+                }
+            } catch (error) {
+                vscode.window.showErrorMessage(`添加到知识库失败: ${error}`);
+            }
+        }),
+        vscode.commands.registerCommand('tcAgent.showBackendLog', () => {
+            backendManager.showOutput();
         })
     );
 

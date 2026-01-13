@@ -1,4 +1,5 @@
 """通义千问LLM"""
+import asyncio
 from typing import AsyncIterator, List
 import dashscope
 from dashscope import Generation
@@ -46,6 +47,7 @@ class QwenLLM(BaseLLM):
             prompt=prompt,
             temperature=temperature,
             stream=True,
+            incremental_output=True,  # 返回增量内容而非累积内容
             result_format="message",
         )
 
@@ -54,6 +56,8 @@ class QwenLLM(BaseLLM):
                 content = response.output.choices[0].message.content
                 if content:
                     yield content
+                    # 让出事件循环控制权，允许数据发送到客户端
+                    await asyncio.sleep(0)
             else:
                 logger.error("Qwen流式生成失败", code=response.code)
 
