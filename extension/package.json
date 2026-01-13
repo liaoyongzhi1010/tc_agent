@@ -1,0 +1,171 @@
+{
+  "name": "tc-agent",
+  "displayName": "TC Agent - 可信计算开发助手",
+  "description": "基于AI的可信计算(OP-TEE/TrustZone)开发助手",
+  "version": "1.0.0",
+  "publisher": "tc-agent",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Programming Languages", "Machine Learning", "Other"],
+  "keywords": ["trusted computing", "OP-TEE", "TrustZone", "TEE", "AI assistant"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "tcAgent.ask",
+        "title": "TC Agent: Ask Question",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "tcAgent.plan",
+        "title": "TC Agent: Create Plan",
+        "icon": "$(tasklist)"
+      },
+      {
+        "command": "tcAgent.code",
+        "title": "TC Agent: Execute Code",
+        "icon": "$(play)"
+      },
+      {
+        "command": "tcAgent.switchModel",
+        "title": "TC Agent: Switch LLM Model",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "tcAgent.addToKnowledge",
+        "title": "TC Agent: Add File to Knowledge Base",
+        "icon": "$(add)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "tcAgent",
+          "title": "TC Agent",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "tcAgent": [
+        {
+          "type": "webview",
+          "id": "tcAgent.mainView",
+          "name": "TC Agent"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "TC Agent",
+      "properties": {
+        "tcAgent.pythonPath": {
+          "type": "string",
+          "default": "python3",
+          "description": "Python解释器路径"
+        },
+        "tcAgent.backendPort": {
+          "type": "number",
+          "default": 8765,
+          "description": "后端服务端口"
+        },
+        "tcAgent.llm.provider": {
+          "type": "string",
+          "enum": ["qwen", "zhipu", "doubao"],
+          "default": "qwen",
+          "description": "LLM提供商",
+          "enumDescriptions": [
+            "通义千问 (阿里云)",
+            "智谱 GLM",
+            "豆包 (火山引擎)"
+          ]
+        },
+        "tcAgent.llm.model": {
+          "type": "string",
+          "default": "",
+          "description": "具体模型名称(留空使用默认)"
+        },
+        "tcAgent.llm.qwenApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "通义千问 API Key"
+        },
+        "tcAgent.llm.zhipuApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "智谱 API Key"
+        },
+        "tcAgent.llm.doubaoApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "豆包 API Key"
+        },
+        "tcAgent.llm.doubaoEndpointId": {
+          "type": "string",
+          "default": "",
+          "description": "豆包 Endpoint ID"
+        },
+        "tcAgent.embedding.mode": {
+          "type": "string",
+          "enum": ["local", "remote"],
+          "default": "local",
+          "description": "Embedding模式",
+          "enumDescriptions": [
+            "本地模型 (需要首次下载)",
+            "远程API"
+          ]
+        },
+        "tcAgent.embedding.model": {
+          "type": "string",
+          "default": "BAAI/bge-small-zh-v1.5",
+          "description": "本地Embedding模型名称"
+        },
+        "tcAgent.knowledge.presetEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用预置知识库"
+        }
+      }
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "tcAgent.addToKnowledge",
+          "group": "tcAgent",
+          "when": "editorHasSelection"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "tcAgent.addToKnowledge",
+          "group": "tcAgent"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "webpack",
+    "watch": "webpack --watch",
+    "package": "webpack --mode production --devtool hidden-source-map",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0",
+    "eslint": "^8.56.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.3.3",
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.4"
+  },
+  "dependencies": {
+    "eventsource": "^2.0.2"
+  }
+}

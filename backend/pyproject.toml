@@ -1,0 +1,60 @@
+[project]
+name = "tc-agent-backend"
+version = "1.0.0"
+description = "TC Agent Backend - 可信计算开发助手"
+requires-python = ">=3.10"
+dependencies = [
+    # Web框架
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "websockets>=12.0",
+
+    # LLM SDK
+    "dashscope>=1.14.0",
+    "zhipuai>=2.0.0",
+
+    # RAG & Embedding
+    "chromadb>=0.4.22",
+    "sentence-transformers>=2.3.0",
+    "langchain>=0.1.0",
+    "langchain-community>=0.0.10",
+
+    # 工具
+    "aiohttp>=3.9.0",
+    "beautifulsoup4>=4.12.0",
+    "httpx>=0.26.0",
+
+    # 数据处理
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+
+    # 文档解析
+    "pypdf>=3.17.0",
+    "python-multipart>=0.0.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "black>=23.12.0",
+    "ruff>=0.1.9",
+    "mypy>=1.8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I", "N"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_ignores = true
