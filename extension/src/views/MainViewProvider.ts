@@ -23,6 +23,11 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
         this.workspaceEditor = new WorkspaceEditor();
     }
 
+    private getWorkspaceRoot(): string | undefined {
+        const folders = vscode.workspace.workspaceFolders;
+        return folders && folders.length > 0 ? folders[0].uri.fsPath : undefined;
+    }
+
     resolveWebviewView(webviewView: vscode.WebviewView): void {
         this.view = webviewView;
 
@@ -119,7 +124,7 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
         try {
             this.view?.webview.postMessage({ command: 'loading', loading: true });
 
-            const response = await this.apiClient.initPlan(task);
+            const response = await this.apiClient.initPlan(task, this.getWorkspaceRoot());
             this.currentWorkflowId = response.workflow_id;
             this.view?.webview.postMessage({
                 command: 'planResponse',
@@ -219,7 +224,7 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
         try {
             this.view?.webview.postMessage({ command: 'codeStart' });
 
-            for await (const event of this.apiClient.executeDirectStream(task)) {
+            for await (const event of this.apiClient.executeDirectStream(task, this.getWorkspaceRoot())) {
                 this.handleAgentEvent(event);
             }
 
@@ -701,6 +706,86 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
 
         .hidden { display: none; }
 
+        /* 表格样式 */
+        .markdown-content table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 12px 0;
+            font-size: 13px;
+        }
+
+        .markdown-content th, .markdown-content td {
+            border: 1px solid var(--vscode-panel-border);
+            padding: 8px 12px;
+            text-align: left;
+        }
+
+        .markdown-content th {
+            background: var(--vscode-editor-inactiveSelectionBackground);
+            font-weight: 600;
+        }
+
+        .markdown-content tr:nth-child(even) {
+            background: rgba(128, 128, 128, 0.05);
+        }
+
+        /* 用户消息可编辑 */
+        .message-user .message-content {
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        .message-user .message-content:hover {
+            opacity: 0.8;
+        }
+
+        .message-user .message-content.editing {
+            background: var(--vscode-input-background);
+            border: 1px solid var(--vscode-focusBorder);
+            padding: 0;
+            cursor: default;
+        }
+
+        .message-user .edit-textarea {
+            width: 100%;
+            min-height: 40px;
+            padding: 10px 14px;
+            border: none;
+            background: transparent;
+            color: var(--vscode-button-foreground);
+            font-family: inherit;
+            font-size: inherit;
+            resize: none;
+            outline: none;
+        }
+
+        .message-user .edit-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 6px;
+            padding: 6px 10px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .message-user .edit-actions button {
+            padding: 4px 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .message-user .edit-cancel {
+            background: transparent;
+            color: var(--vscode-button-foreground);
+            opacity: 0.7;
+        }
+
+        .message-user .edit-send {
+            background: rgba(255,255,255,0.2);
+            color: var(--vscode-button-foreground);
+        }
+
         /* 底部输入区域 */
         .input-container {
             border-top: 1px solid var(--vscode-panel-border);
@@ -975,6 +1060,37 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
                 result = result.replace(/\`\`\`(\\w*)\\n([\\s\\S]*)$/, '<pre><code class="language-' + lang + '">' + highlighted + '</code></pre>');
             }
 
+            // 处理表格
+            result = result.replace(/((?:^\\|.+\\|\\s*$\\n?)+)/gm, (tableMatch) => {
+                const lines = tableMatch.trim().split('\\n').filter(line => line.trim());
+                if (lines.length < 2) return tableMatch;
+
+                // 检查是否有分隔行 (|---|---|)
+                const separatorIndex = lines.findIndex(line => /^\\|[\\s:-]+\\|$/.test(line.replace(/[^|:-]/g, '').length > 2 ? line : ''));
+                const hasSeparator = lines.some(line => /^\\s*\\|[\\s|:-]+\\|\\s*$/.test(line) && line.includes('-'));
+
+                if (!hasSeparator) return tableMatch;
+
+                let html = '<table>';
+                let inHeader = true;
+
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i].trim();
+                    // 跳过分隔行
+                    if (/^\\s*\\|[\\s|:-]+\\|\\s*$/.test(line) && line.includes('-')) {
+                        inHeader = false;
+                        continue;
+                    }
+
+                    const cells = line.split('|').slice(1, -1).map(c => c.trim());
+                    const tag = inHeader ? 'th' : 'td';
+                    html += '<tr>' + cells.map(c => '<' + tag + '>' + c + '</' + tag + '>').join('') + '</tr>';
+                }
+
+                html += '</table>';
+                return html;
+            });
+
             return result
                 .replace(/\`([^\`]+)\`/g, '<code>$1</code>')
                 .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
@@ -995,9 +1111,120 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
             const container = document.getElementById('chat-container');
             const msg = document.createElement('div');
             msg.className = 'message message-user';
+            msg.dataset.originalText = text;
             msg.innerHTML = '<div class="message-content">' + escapeHtml(text) + '</div>';
+
+            // 点击进入编辑模式
+            const content = msg.querySelector('.message-content');
+            content.onclick = () => enterEditMode(msg);
+
             container.appendChild(msg);
             scrollToBottom();
+            return msg;
+        }
+
+        // 进入编辑模式
+        function enterEditMode(msg) {
+            const content = msg.querySelector('.message-content');
+            if (content.classList.contains('editing')) return;
+
+            const originalText = msg.dataset.originalText;
+            content.classList.add('editing');
+            content.innerHTML = \`
+                <textarea class="edit-textarea">\${escapeHtml(originalText)}</textarea>
+                <div class="edit-actions">
+                    <button class="edit-cancel">取消</button>
+                    <button class="edit-send">发送</button>
+                </div>
+            \`;
+
+            const textarea = content.querySelector('.edit-textarea');
+            textarea.focus();
+            textarea.selectionStart = textarea.value.length;
+
+            // 自动调整高度
+            textarea.style.height = 'auto';
+            textarea.style.height = textarea.scrollHeight + 'px';
+            textarea.oninput = () => {
+                textarea.style.height = 'auto';
+                textarea.style.height = textarea.scrollHeight + 'px';
+            };
+
+            // 取消编辑
+            content.querySelector('.edit-cancel').onclick = (e) => {
+                e.stopPropagation();
+                exitEditMode(msg);
+            };
+
+            // 发送编辑后的消息
+            content.querySelector('.edit-send').onclick = (e) => {
+                e.stopPropagation();
+                const newText = textarea.value.trim();
+                if (newText) {
+                    resendFromMessage(msg, newText);
+                }
+            };
+
+            // Ctrl+Enter 发送
+            textarea.onkeydown = (e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault();
+                    const newText = textarea.value.trim();
+                    if (newText) {
+                        resendFromMessage(msg, newText);
+                    }
+                }
+                if (e.key === 'Escape') {
+                    exitEditMode(msg);
+                }
+            };
+
+            // 阻止点击事件冒泡
+            textarea.onclick = (e) => e.stopPropagation();
+        }
+
+        // 退出编辑模式
+        function exitEditMode(msg) {
+            const content = msg.querySelector('.message-content');
+            content.classList.remove('editing');
+            content.innerHTML = escapeHtml(msg.dataset.originalText);
+            content.onclick = () => enterEditMode(msg);
+        }
+
+        // 从某条消息重新发送
+        function resendFromMessage(msg, newText) {
+            const container = document.getElementById('chat-container');
+
+            // 删除该消息之后的所有消息
+            let sibling = msg.nextElementSibling;
+            while (sibling) {
+                const next = sibling.nextElementSibling;
+                container.removeChild(sibling);
+                sibling = next;
+            }
+
+            // 更新消息内容
+            msg.dataset.originalText = newText;
+            const content = msg.querySelector('.message-content');
+            content.classList.remove('editing');
+            content.innerHTML = escapeHtml(newText);
+            content.onclick = () => enterEditMode(msg);
+
+            // 创建新的助手消息并发送
+            currentAssistantMsg = addAssistantMessage();
+            currentSources = null;
+
+            switch(currentMode) {
+                case 'ask':
+                    vscode.postMessage({ command: 'ask', query: newText });
+                    break;
+                case 'plan':
+                    vscode.postMessage({ command: 'plan', task: newText });
+                    break;
+                case 'code':
+                    vscode.postMessage({ command: 'directExecute', task: newText });
+                    break;
+            }
         }
 
         // 添加助手消息（返回消息元素以便更新）

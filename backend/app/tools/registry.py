@@ -44,7 +44,14 @@ class ToolRegistry:
                 for name in names:
                     tool = self._tools.get(name)
                     if tool:
-                        lines.append(f"- {tool.name}: {tool.description}")
+                        lines.append(f"\n### {tool.name}")
+                        lines.append(f"描述: {tool.description}")
+                        lines.append("参数:")
+                        schema = tool.get_schema()
+                        for param, info in schema.items():
+                            param_type = info.get("type", "string")
+                            param_desc = info.get("description", "")
+                            lines.append(f"  - {param} ({param_type}): {param_desc}")
         return "\n".join(lines)
 
     def load_all_tools(self) -> None:

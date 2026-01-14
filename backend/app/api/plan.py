@@ -33,10 +33,11 @@ async def get_workflow_manager() -> WorkflowManager:
 @router.post("/init")
 async def init_plan(body: PlanInitRequest):
     """初始化计划,生成workflow"""
-    logger.info("初始化Plan", task=body.task[:50])
+    logger.info("初始化Plan", task=body.task[:50], workspace=body.workspace_root)
 
     manager = await get_workflow_manager()
     workflow = await manager.generate_workflow(body.task, body.context)
+    workflow.workspace_root = body.workspace_root
     workflows[workflow.id] = workflow
 
     logger.info("Plan生成完成", workflow_id=workflow.id, steps_count=len(workflow.steps))

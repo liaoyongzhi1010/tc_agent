@@ -56,7 +56,8 @@ async def execute_workflow(websocket: WebSocket, workflow_id: str):
         # 创建并运行ReAct Agent
         agent = get_react_agent()
 
-        async for event in agent.run(workflow.task, workflow):
+        async for event in agent.run(workflow.task, workflow, workflow.workspace_root):
+            logger.info("发送事件", event_type=event.type)
             await websocket.send_json({"type": event.type, "data": event.data})
 
     except WebSocketDisconnect:
@@ -80,13 +81,13 @@ async def execute_direct(body: CodeExecuteRequest):
     if not body.task:
         raise HTTPException(status_code=400, detail="Task required")
 
-    logger.info("直接执行任务", task=body.task[:50])
+    logger.info("直接执行任务", task=body.task[:50], workspace=body.workspace_root)
 
     async def generate():
         try:
             agent = get_react_agent()
 
-            async for event in agent.run(body.task):
+            async for event in agent.run(body.task, workspace_root=body.workspace_root):
                 yield f"data: {json.dumps({'type': event.type, 'data': event.data}, ensure_ascii=False)}\n\n"
 
         except Exception as e:

@@ -89,11 +89,11 @@ export class ApiClient {
         }
     }
 
-    async initPlan(task: string): Promise<PlanResponse> {
+    async initPlan(task: string, workspaceRoot?: string): Promise<PlanResponse> {
         const response = await fetch(`${this.getBaseUrl()}/plan/init`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ task })
+            body: JSON.stringify({ task, workspace_root: workspaceRoot })
         });
 
         if (!response.ok) {
@@ -136,11 +136,11 @@ export class ApiClient {
         return new WebSocket(`${wsUrl}/code/execute/${workflowId}`);
     }
 
-    async *executeDirectStream(task: string): AsyncGenerator<{ type: string; data: any }> {
+    async *executeDirectStream(task: string, workspaceRoot?: string): AsyncGenerator<{ type: string; data: any }> {
         const response = await fetch(`${this.getBaseUrl()}/code/execute-direct`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ task })
+            body: JSON.stringify({ task, workspace_root: workspaceRoot })
         });
 
         if (!response.ok) {

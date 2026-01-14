@@ -26,6 +26,7 @@ class Workflow(BaseModel):
     steps: List[WorkflowStep]
     status: str = "draft"  # draft | confirmed | running | completed | failed
     current_step: int = 0
+    workspace_root: Optional[str] = None
 
 
 class RetrievedDoc(BaseModel):
@@ -74,6 +75,7 @@ class PlanInitRequest(BaseModel):
     """Plan初始化请求"""
     task: str
     context: Optional[str] = None
+    workspace_root: Optional[str] = None
 
 
 class PlanRefineRequest(BaseModel):
@@ -92,6 +94,7 @@ class CodeExecuteRequest(BaseModel):
     """Code执行请求"""
     task: str
     workflow_id: Optional[str] = None
+    workspace_root: Optional[str] = None
 
 
 # 知识库

@@ -1,5 +1,6 @@
 """通义千问LLM"""
 import asyncio
+from functools import partial
 from typing import AsyncIterator, List
 import dashscope
 from dashscope import Generation
@@ -20,11 +21,13 @@ class QwenLLM(BaseLLM):
         dashscope.api_key = api_key
 
     async def generate(self, prompt: str, config: LLMConfig = None) -> str:
-        """同步生成"""
+        """异步生成"""
         model = config.model if config else self.model
         temperature = config.temperature if config else 0.7
 
-        response = Generation.call(
+        # 在线程池中运行同步调用，避免阻塞事件循环
+        response = await asyncio.to_thread(
+            Generation.call,
             model=model,
             prompt=prompt,
             temperature=temperature,
@@ -42,21 +45,24 @@ class QwenLLM(BaseLLM):
         model = config.model if config else self.model
         temperature = config.temperature if config else 0.7
 
-        responses = Generation.call(
-            model=model,
-            prompt=prompt,
-            temperature=temperature,
-            stream=True,
-            incremental_output=True,  # 返回增量内容而非累积内容
-            result_format="message",
-        )
+        # 流式调用需要在线程中执行
+        def _stream_call():
+            return Generation.call(
+                model=model,
+                prompt=prompt,
+                temperature=temperature,
+                stream=True,
+                incremental_output=True,
+                result_format="message",
+            )
+
+        responses = await asyncio.to_thread(_stream_call)
 
         for response in responses:
             if response.status_code == 200:
                 content = response.output.choices[0].message.content
                 if content:
                     yield content
-                    # 让出事件循环控制权，允许数据发送到客户端
                     await asyncio.sleep(0)
             else:
                 logger.error("Qwen流式生成失败", code=response.code)
@@ -66,7 +72,8 @@ class QwenLLM(BaseLLM):
         model = config.model if config else self.model
         temperature = config.temperature if config else 0.7
 
-        response = Generation.call(
+        response = await asyncio.to_thread(
+            Generation.call,
             model=model,
             messages=messages,
             temperature=temperature,

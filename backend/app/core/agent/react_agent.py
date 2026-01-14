@@ -1,4 +1,5 @@
 """ReAct Agent实现"""
+import traceback
 from typing import AsyncIterator, List, Optional
 from dataclasses import dataclass, field
 
@@ -22,6 +23,7 @@ class AgentContext:
     current_step_index: int = 0
     history: List[dict] = field(default_factory=list)
     iteration: int = 0
+    workspace_root: Optional[str] = None
 
 
 class ReActAgent:
@@ -33,12 +35,12 @@ class ReActAgent:
         self.parser = AgentOutputParser()
 
     async def run(
-        self, task: str, workflow: Optional[Workflow] = None
+        self, task: str, workflow: Optional[Workflow] = None, workspace_root: Optional[str] = None
     ) -> AsyncIterator[AgentEvent]:
         """执行任务，返回事件流"""
-        logger.info("Agent开始执行", task=task[:50])
+        logger.info("Agent开始执行", task=task[:50], workspace=workspace_root)
 
-        ctx = AgentContext(task=task, workflow=workflow)
+        ctx = AgentContext(task=task, workflow=workflow, workspace_root=workspace_root)
 
         # 如果有workflow，按步骤执行
         if workflow and workflow.steps:
@@ -184,7 +186,7 @@ class ReActAgent:
             else:
                 return f"执行失败: {result.error}"
         except Exception as e:
-            logger.error("工具执行异常", tool=action.tool, error=str(e))
+            logger.error("工具执行异常", tool=action.tool, input=action.input, error=str(e), tb=traceback.format_exc())
             return f"执行异常: {str(e)}"
 
     def _build_step_prompt(self, ctx: AgentContext, step: WorkflowStep) -> str:
@@ -193,8 +195,10 @@ class ReActAgent:
         system = REACT_SYSTEM_PROMPT.format(tools_description=tools_desc)
 
         history_str = self._format_history(ctx.history)
+        workspace = ctx.workspace_root or "/tmp"
 
         step_prompt = REACT_STEP_PROMPT.format(
+            workspace_root=workspace,
             task=ctx.task,
             current_step=f"{step.id}. {step.description}",
             history=history_str or "（无历史记录）",
@@ -208,8 +212,10 @@ class ReActAgent:
         system = REACT_SYSTEM_PROMPT.format(tools_description=tools_desc)
 
         history_str = self._format_history(ctx.history)
+        workspace = ctx.workspace_root or "/tmp"
 
         direct_prompt = REACT_DIRECT_PROMPT.format(
+            workspace_root=workspace,
             task=ctx.task,
             history=history_str or "（无历史记录）",
         )

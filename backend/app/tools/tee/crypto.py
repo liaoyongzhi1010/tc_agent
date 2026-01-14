@@ -112,32 +112,65 @@ cleanup:
     if (op != TEE_HANDLE_NULL) TEE_FreeOperation(op);
     return res;
 }''',
+        "aes_gcm_decrypt": '''static TEE_Result do_aes_gcm_decrypt(const uint8_t *key, size_t key_len,
+                                      const uint8_t *iv, size_t iv_len,
+                                      const uint8_t *aad, size_t aad_len,
+                                      const uint8_t *cipher, size_t cipher_len,
+                                      uint8_t *plain, size_t *plain_len,
+                                      const uint8_t *tag, size_t tag_len) {
+    TEE_Result res;
+    TEE_OperationHandle op = TEE_HANDLE_NULL;
+    TEE_ObjectHandle key_obj = TEE_HANDLE_NULL;
+    TEE_Attribute attr;
+
+    res = TEE_AllocateOperation(&op, TEE_ALG_AES_GCM,
+                                 TEE_MODE_DECRYPT, key_len * 8);
+    if (res != TEE_SUCCESS) goto cleanup;
+
+    res = TEE_AllocateTransientObject(TEE_TYPE_AES, key_len * 8, &key_obj);
+    if (res != TEE_SUCCESS) goto cleanup;
+
+    TEE_InitRefAttribute(&attr, TEE_ATTR_SECRET_VALUE, key, key_len);
+    res = TEE_PopulateTransientObject(key_obj, &attr, 1);
+    if (res != TEE_SUCCESS) goto cleanup;
+
+    res = TEE_SetOperationKey(op, key_obj);
+    if (res != TEE_SUCCESS) goto cleanup;
+
+    res = TEE_AEInit(op, iv, iv_len, tag_len * 8, aad_len, cipher_len);
+    if (res != TEE_SUCCESS) goto cleanup;
+
+    if (aad_len > 0) {
+        TEE_AEUpdateAAD(op, aad, aad_len);
     }
 
-    async def execute(self, operation: str, algorithm: str = None) -> ToolResult:
-        key = f"{operation}_{algorithm}" if algorithm else operation
+    res = TEE_AEDecryptFinal(op, cipher, cipher_len, plain, plain_len, tag, tag_len);
 
-        if key not in self.TEMPLATES:
+cleanup:
+    if (op != TEE_HANDLE_NULL) TEE_FreeOperation(op);
+    if (key_obj != TEE_HANDLE_NULL) TEE_FreeTransientObject(key_obj);
+    return res;
+}''',
+    }
+
+    async def execute(self, operation: str) -> ToolResult:
+        if operation not in self.TEMPLATES:
             available = list(self.TEMPLATES.keys())
             return ToolResult(
-                success=False, error=f"未知操作: {key}, 可用: {available}"
+                success=False, error=f"未知操作: {operation}, 可用: {available}"
             )
 
-        logger.info("生成加密代码", operation=key)
+        logger.info("生成加密代码", operation=operation)
 
         return ToolResult(
-            success=True, data={"code": self.TEMPLATES[key], "operation": key}
+            success=True, data={"code": self.TEMPLATES[operation], "operation": operation}
         )
 
     def get_schema(self) -> Dict[str, Any]:
         return {
             "operation": {
                 "type": "string",
-                "enum": ["hmac", "aes_gcm_encrypt", "rsa_sign"],
-                "description": "加密操作类型",
-            },
-            "algorithm": {
-                "type": "string",
-                "description": "算法(如sha256), 某些操作需要",
+                "enum": ["hmac_sha256", "aes_gcm_encrypt", "aes_gcm_decrypt", "rsa_sign"],
+                "description": "加密操作类型: hmac_sha256(HMAC-SHA256), aes_gcm_encrypt(AES-GCM加密), aes_gcm_decrypt(AES-GCM解密), rsa_sign(RSA签名)",
             },
         }
