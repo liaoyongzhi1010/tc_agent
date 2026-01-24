@@ -14,3 +14,13 @@ def test_ta_generator_aes_gcm_template_includes_commands():
     assert "TA_CMD_AES_GCM_DECRYPT" in ta_h
     assert "do_aes_gcm_encrypt" in ta_c
     assert "do_aes_gcm_decrypt" in ta_c
+
+from app.tools.tee.ca_generator import CAGenerator
+
+
+def test_ca_generator_aes_gcm_template_includes_commands():
+    gen = CAGenerator()
+    result = gen._build_files(name="aes_demo", ta_name="aes_demo", template="aes_gcm_simple")
+    ca_c = result["aes_demo.c"]
+    assert "TA_CMD_AES_GCM_ENCRYPT" in ca_c
+    assert "TA_CMD_AES_GCM_DECRYPT" in ca_c
