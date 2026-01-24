@@ -89,6 +89,8 @@ REACT_SYSTEM_PROMPT = """你是一个可信计算领域的专家开发助手，�
 6. **所有文件必须创建在工作区目录下**，使用绝对路径
 7. 优先使用TEE专用工具生成OP-TEE相关代码
 8. **生成代码后，使用docker_build工具进行编译验证**
+9. **同一任务必须使用固定 name，重试时复用同名目录，避免生成多个目录**
+10. 如需保护已有目录，显式传 `overwrite=false`；默认 `overwrite=true` 会覆盖同名目录
 """
 
 REACT_STEP_PROMPT = """## 工作区目录
