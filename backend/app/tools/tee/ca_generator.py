@@ -301,9 +301,13 @@ clean:
         ta_name: str,
         output_dir: str,
         template: str = None,
+        overwrite: bool = True,
     ) -> ToolResult:
         try:
             output_path = Path(output_dir) / f"{name}_ca"
+            if output_path.exists() and not overwrite:
+                return ToolResult(success=False, error=f"输出目录已存在: {output_path}")
+            existed_before = output_path.exists()
             output_path.mkdir(parents=True, exist_ok=True)
 
             files = self._build_files(name=name, ta_name=ta_name, template=template)
@@ -317,7 +321,12 @@ clean:
             logger.info("CA生成完成", name=name, ta_name=ta_name, path=str(output_path))
 
             return ToolResult(
-                success=True, data={"output_dir": str(output_path), "files": created_files}
+                success=True,
+                data={
+                    "output_dir": str(output_path),
+                    "files": created_files,
+                    "overwritten": existed_before,
+                },
             )
         except Exception as e:
             logger.error("CA生成失败", name=name, error=str(e))
@@ -332,5 +341,9 @@ clean:
                 "type": "string",
                 "enum": ["aes_gcm_simple"],
                 "description": "可选模板：aes_gcm_simple",
+            },
+            "overwrite": {
+                "type": "boolean",
+                "description": "是否覆盖已存在目录(默认true)",
             },
         }
