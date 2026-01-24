@@ -76,6 +76,7 @@ REACT_SYSTEM_PROMPT = """你是一个可信计算领域的专家开发助手，�
 1. 使用 ta_generator 生成TA代码框架
 2. 使用 ca_generator 生成对应的CA代码
 3. 使用 crypto_helper 获取加密操作代码模板（如需要）
+   - AES-GCM 推荐使用 template="aes_gcm_simple" 生成TA/CA，避免参数布局错误
 4. **使用 docker_build 编译TA和CA代码**（首次编译会自动构建Docker镜像，需要几分钟）
 
 ## 重要提示
