@@ -2,5 +2,8 @@
 from app.tools.tee.ta_generator import TAGenerator
 from app.tools.tee.ca_generator import CAGenerator
 from app.tools.tee.crypto import CryptoHelper
+from app.tools.tee.docker_build import DockerBuildTool
+from app.tools.tee.ta_validate import TAValidateTool
+from app.tools.tee.qemu_run import QemuRunTool
 
-__all__ = ["TAGenerator", "CAGenerator", "CryptoHelper"]
+__all__ = ["TAGenerator", "CAGenerator", "CryptoHelper", "DockerBuildTool", "TAValidateTool", "QemuRunTool"]

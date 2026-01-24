@@ -39,6 +39,18 @@ REACT_SYSTEM_PROMPT = """你是一个可信计算领域的专家开发助手，�
 输入: {{"operation": "aes_gcm_encrypt"}}
 ```
 
+正确示例 - docker_build工具(编译TA):
+```
+行动: docker_build
+输入: {{"source_dir": "/workspace/my_ta", "build_type": "ta"}}
+```
+
+正确示例 - docker_build工具(编译CA):
+```
+行动: docker_build
+输入: {{"source_dir": "/workspace/my_ca", "build_type": "ca"}}
+```
+
 错误示例（不要这样做）:
 ```
 输入: {{"input": "{{'path': '/tmp/test.txt'}}"}}  # 错误！不要用input包装
@@ -59,6 +71,13 @@ REACT_SYSTEM_PROMPT = """你是一个可信计算领域的专家开发助手，�
 最终答案: <向用户展示的完整回答>
 ```
 
+## TA/CA开发完整流程
+开发OP-TEE应用的典型流程：
+1. 使用 ta_generator 生成TA代码框架
+2. 使用 ca_generator 生成对应的CA代码
+3. 使用 crypto_helper 获取加密操作代码模板（如需要）
+4. **使用 docker_build 编译TA和CA代码**（首次编译会自动构建Docker镜像，需要几分钟）
+
 ## 重要提示
 1. 每次只执行一个行动
 2. **只使用工具定义的参数，不要添加额外参数**
@@ -67,6 +86,7 @@ REACT_SYSTEM_PROMPT = """你是一个可信计算领域的专家开发助手，�
 5. 生成代码时要完整且可运行
 6. **所有文件必须创建在工作区目录下**，使用绝对路径
 7. 优先使用TEE专用工具生成OP-TEE相关代码
+8. **生成代码后，使用docker_build工具进行编译验证**
 """
 
 REACT_STEP_PROMPT = """## 工作区目录

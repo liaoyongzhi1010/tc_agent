@@ -13,8 +13,8 @@ class Settings(BaseSettings):
     port: int = 8765
     debug: bool = False
 
-    # 数据目录
-    data_dir: Path = Field(default_factory=lambda: Path.home() / ".tc_agent")
+    # 数据目录 (默认在代码目录下的 data 文件夹)
+    data_dir: Path = Field(default_factory=lambda: Path(__file__).parent.parent.parent / "data")
 
     # LLM配置
     llm_provider: str = "qwen"  # qwen, zhipu, doubao

@@ -1,0 +1,572 @@
+# OP-TEE 完整开发环境 Docker 镜像
+# 功能：编译 TA/CA + QEMU 运行测试
+# 基于 Ubuntu 22.04 + OP-TEE 4.0 + QEMU
+
+FROM ubuntu:22.04
+
+LABEL maintainer="TC Agent"
+LABEL description="OP-TEE Development Environment (Build + QEMU Runtime)"
+LABEL optee_version="4.0"
+
+# 避免交互式提示
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Shanghai
+
+# ========================================
+# 1. 安装基础依赖
+# ========================================
+RUN apt-get update && apt-get install -y \
+    android-tools-adb \
+    android-tools-fastboot \
+    autoconf \
+    automake \
+    bc \
+    bison \
+    build-essential \
+    ccache \
+    cpio \
+    cscope \
+    curl \
+    device-tree-compiler \
+    expect \
+    flex \
+    ftp-upload \
+    gdisk \
+    git \
+    kmod \
+    libattr1-dev \
+    libcap-dev \
+    libfdt-dev \
+    libftdi-dev \
+    libglib2.0-dev \
+    libgmp-dev \
+    libhidapi-dev \
+    libmpc-dev \
+    libncurses5-dev \
+    libpixman-1-dev \
+    libslirp-dev \
+    libssl-dev \
+    libtool \
+    make \
+    mtools \
+    netcat \
+    ninja-build \
+    python3 \
+    python3-pip \
+    python3-cryptography \
+    python3-pyelftools \
+    python3-serial \
+    rsync \
+    unzip \
+    uuid-dev \
+    wget \
+    xdg-utils \
+    xterm \
+    xz-utils \
+    zlib1g-dev \
+    dosfstools \
+    file \
+    xxd \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装 ARM 交叉编译工具链
+RUN apt-get update && apt-get install -y \
+    gcc-aarch64-linux-gnu \
+    g++-aarch64-linux-gnu \
+    binutils-aarch64-linux-gnu \
+    gcc-arm-linux-gnueabihf \
+    g++-arm-linux-gnueabihf \
+    && rm -rf /var/lib/apt/lists/*
+
+# 创建工作目录
+WORKDIR /optee
+
+# ========================================
+# 2. 下载并编译 OP-TEE 组件
+# ========================================
+RUN git clone --depth 1 --branch 4.0.0 https://github.com/OP-TEE/optee_os.git && \
+    git clone --depth 1 --branch 4.0.0 https://github.com/OP-TEE/optee_client.git && \
+    git clone --depth 1 --branch 4.0.0 https://github.com/OP-TEE/optee_test.git
+
+# 编译 OP-TEE OS (QEMU ARMv8)
+RUN cd /optee/optee_os && \
+    make PLATFORM=vexpress-qemu_armv8a CFG_ARM64_core=y \
+    CROSS_COMPILE=aarch64-linux-gnu- \
+    CROSS_COMPILE_core=aarch64-linux-gnu- \
+    CROSS_COMPILE_ta_arm64=aarch64-linux-gnu- \
+    ta-targets=ta_arm64 \
+    -j$(nproc)
+
+# 编译 OP-TEE Client
+RUN cd /optee/optee_client && \
+    make CROSS_COMPILE=aarch64-linux-gnu- \
+    -j$(nproc)
+
+# 设置 TA 开发环境变量
+ENV TA_DEV_KIT_DIR=/optee/optee_os/out/arm-plat-vexpress/export-ta_arm64
+ENV TEEC_EXPORT=/optee/optee_client/out/export/usr
+ENV CROSS_COMPILE=aarch64-linux-gnu-
+
+# ========================================
+# 3. 编译 QEMU (支持 ARM64 + TrustZone)
+# ========================================
+RUN git clone --depth 1 --branch v8.1.0 https://github.com/qemu/qemu.git && \
+    cd qemu && \
+    ./configure \
+        --target-list=aarch64-softmmu \
+        --enable-slirp \
+        --disable-werror && \
+    make -j$(nproc) && \
+    make install && \
+    cd .. && rm -rf qemu
+
+# ========================================
+# 4. 编译 Linux 内核 (带 OP-TEE 支持)
+# ========================================
+RUN git clone --depth 1 --branch v6.1 https://github.com/torvalds/linux.git linux && \
+    cd linux && \
+    make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig && \
+    # 启用必要的内核选项
+    ./scripts/config --enable TEE && \
+    ./scripts/config --enable OPTEE && \
+    ./scripts/config --enable VIRTIO_MMIO && \
+    ./scripts/config --enable VIRTIO_CONSOLE && \
+    ./scripts/config --enable HW_RANDOM && \
+    ./scripts/config --enable HW_RANDOM_VIRTIO && \
+    ./scripts/config --enable DEVTMPFS && \
+    ./scripts/config --enable DEVTMPFS_MOUNT && \
+    ./scripts/config --enable TMPFS && \
+    ./scripts/config --enable UNIX && \
+    ./scripts/config --enable INET && \
+    ./scripts/config --enable SERIAL_AMBA_PL011 && \
+    ./scripts/config --enable SERIAL_AMBA_PL011_CONSOLE && \
+    make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig && \
+    make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image && \
+    cp arch/arm64/boot/Image /optee/Image && \
+    cd .. && rm -rf linux
+
+# ========================================
+# 4.5 编译 ARM Trusted Firmware (TF-A)
+# ========================================
+RUN git clone --depth 1 --branch v2.10.0 https://github.com/ARM-software/arm-trusted-firmware.git tf-a
+
+# 编译 TF-A + OP-TEE for QEMU virt 平台
+RUN cd /optee/tf-a && \
+    make PLAT=qemu \
+    ARM_ARCH_MAJOR=8 \
+    BL32=/optee/optee_os/out/arm-plat-vexpress/core/tee-header_v2.bin \
+    BL32_EXTRA1=/optee/optee_os/out/arm-plat-vexpress/core/tee-pager_v2.bin \
+    BL32_EXTRA2=/optee/optee_os/out/arm-plat-vexpress/core/tee-pageable_v2.bin \
+    BL33=/optee/Image \
+    SPD=opteed \
+    CROSS_COMPILE=aarch64-linux-gnu- \
+    DEBUG=0 \
+    -j$(nproc) all fip
+
+# 复制 ATF 输出文件并创建 flash.bin
+RUN mkdir -p /optee/atf && \
+    cp /optee/tf-a/build/qemu/release/bl1.bin /optee/atf/ && \
+    cp /optee/tf-a/build/qemu/release/fip.bin /optee/atf/ && \
+    dd if=/dev/zero of=/optee/atf/flash.bin bs=1M count=64 && \
+    dd if=/optee/atf/bl1.bin of=/optee/atf/flash.bin conv=notrunc && \
+    dd if=/optee/atf/fip.bin of=/optee/atf/flash.bin seek=64 bs=4096 conv=notrunc
+
+# ========================================
+# 5. 编译 BusyBox (创建最小 rootfs)
+# ========================================
+RUN git clone --depth 1 --branch 1_36_1 https://github.com/mirror/busybox.git && \
+    cd busybox && \
+    make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig && \
+    sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config && \
+    make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) && \
+    make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CONFIG_PREFIX=/optee/rootfs install && \
+    cd .. && rm -rf busybox
+
+# ========================================
+# 6. 创建 rootfs 结构
+# ========================================
+RUN mkdir -p /optee/rootfs/dev \
+    /optee/rootfs/proc \
+    /optee/rootfs/sys \
+    /optee/rootfs/tmp \
+    /optee/rootfs/etc/init.d \
+    /optee/rootfs/root \
+    /optee/rootfs/var/run \
+    /optee/rootfs/lib/optee_armtz \
+    /optee/rootfs/usr/lib \
+    /optee/rootfs/usr/bin \
+    /optee/rootfs/usr/sbin
+
+# 复制 OP-TEE 客户端库和工具
+RUN cp -a /optee/optee_client/out/export/usr/lib/*.so* /optee/rootfs/usr/lib/ && \
+    cp /optee/optee_client/out/tee-supplicant/tee-supplicant /optee/rootfs/usr/sbin/ && \
+    cd /optee/rootfs/lib && \
+    ln -sf ../usr/lib/libteec.so.1.0.0 libteec.so.1.0.0 && \
+    ln -sf libteec.so.1.0.0 libteec.so.1 && \
+    ln -sf libteec.so.1 libteec.so
+
+# 编译 xtest (OP-TEE 测试套件)
+RUN cd /optee/optee_test && \
+    make CROSS_COMPILE=aarch64-linux-gnu- \
+    TA_DEV_KIT_DIR=/optee/optee_os/out/arm-plat-vexpress/export-ta_arm64 \
+    OPTEE_CLIENT_EXPORT=/optee/optee_client/out/export/usr \
+    CFG_ARM64=y \
+    -j$(nproc) || true && \
+    # 复制 xtest 到 rootfs
+    cp /optee/optee_test/out/xtest/xtest /optee/rootfs/usr/bin/ 2>/dev/null || true && \
+    # 复制测试 TA
+    cp /optee/optee_test/out/ta/*/*.ta /optee/rootfs/lib/optee_armtz/ 2>/dev/null || true
+
+# 创建设备节点
+RUN cd /optee/rootfs && \
+    mknod -m 666 dev/null c 1 3 && \
+    mknod -m 666 dev/zero c 1 5 && \
+    mknod -m 666 dev/tty c 5 0 && \
+    mknod -m 622 dev/console c 5 1 && \
+    mknod -m 666 dev/ptmx c 5 2 && \
+    mknod -m 666 dev/random c 1 8 && \
+    mknod -m 666 dev/urandom c 1 9 && \
+    mkdir -p dev/pts
+
+# 创建启动脚本
+RUN echo '#!/bin/sh\n\
+mount -t proc proc /proc\n\
+mount -t sysfs sysfs /sys\n\
+mount -t devpts devpts /dev/pts 2>/dev/null || true\n\
+mount -t tmpfs tmpfs /tmp\n\
+\n\
+echo ""\n\
+echo "========================================"\n\
+echo "  OP-TEE QEMU Environment Starting..."\n\
+echo "========================================"\n\
+\n\
+# 启动 tee-supplicant\n\
+echo "Starting tee-supplicant..."\n\
+/usr/sbin/tee-supplicant -d\n\
+sleep 1\n\
+\n\
+echo ""\n\
+echo "Available TAs in /lib/optee_armtz/:"\n\
+ls /lib/optee_armtz/*.ta 2>/dev/null || echo "  (none)"\n\
+echo ""\n\
+echo "========================================"\n\
+echo "  OP-TEE Ready! Run your CA to test."\n\
+echo "========================================"\n\
+echo ""\n\
+\n\
+exec /bin/sh\n\
+' > /optee/rootfs/etc/init.d/rcS && chmod +x /optee/rootfs/etc/init.d/rcS
+
+# 创建 inittab
+RUN echo '::sysinit:/etc/init.d/rcS\n\
+::respawn:-/bin/sh\n\
+::restart:/sbin/init\n\
+' > /optee/rootfs/etc/inittab
+
+# 创建基础 initramfs (不含用户 TA)
+RUN cd /optee/rootfs && \
+    find . | cpio -H newc -o 2>/dev/null | gzip > /optee/rootfs.cpio.gz
+
+# ========================================
+# 7. 创建工具脚本
+# ========================================
+
+# TA 编译脚本
+RUN echo '#!/bin/bash\n\
+set -e\n\
+if [ -z "$1" ]; then\n\
+    echo "Usage: build_ta.sh <ta_directory>"\n\
+    exit 1\n\
+fi\n\
+TA_DIR=$1\n\
+cd $TA_DIR\n\
+make CROSS_COMPILE=aarch64-linux-gnu- \\\n\
+     TA_DEV_KIT_DIR=/optee/optee_os/out/arm-plat-vexpress/export-ta_arm64 \\\n\
+     -j$(nproc)\n\
+echo ""\n\
+echo "TA build completed!"\n\
+ls -la *.ta 2>/dev/null || echo "No .ta file generated"\n\
+' > /usr/local/bin/build_ta.sh && chmod +x /usr/local/bin/build_ta.sh
+
+# CA 编译脚本
+RUN echo '#!/bin/bash\n\
+set -e\n\
+if [ -z "$1" ]; then\n\
+    echo "Usage: build_ca.sh <ca_directory>"\n\
+    exit 1\n\
+fi\n\
+CA_DIR=$1\n\
+cd $CA_DIR\n\
+make CROSS_COMPILE=aarch64-linux-gnu- \\\n\
+     TEEC_EXPORT=/optee/optee_client/out/export/usr \\\n\
+     -j$(nproc)\n\
+echo "CA build completed!"\n\
+' > /usr/local/bin/build_ca.sh && chmod +x /usr/local/bin/build_ca.sh
+
+# QEMU 运行脚本 (使用 ATF + OP-TEE)
+RUN echo '#!/bin/bash\n\
+\n\
+TA_DIR=${1:-}\n\
+CA_FILE=${2:-}\n\
+\n\
+# 准备 rootfs\n\
+WORK_DIR=$(mktemp -d)\n\
+cd $WORK_DIR\n\
+zcat /optee/rootfs.cpio.gz | cpio -idm 2>/dev/null\n\
+\n\
+# 复制用户 TA\n\
+if [ -n "$TA_DIR" ] && [ -d "$TA_DIR" ]; then\n\
+    echo "Loading TAs from: $TA_DIR"\n\
+    cp $TA_DIR/*.ta lib/optee_armtz/ 2>/dev/null || true\n\
+fi\n\
+\n\
+# 复制用户 CA\n\
+if [ -n "$CA_FILE" ] && [ -f "$CA_FILE" ]; then\n\
+    echo "Loading CA: $CA_FILE"\n\
+    cp $CA_FILE usr/bin/\n\
+    chmod +x usr/bin/$(basename $CA_FILE)\n\
+fi\n\
+\n\
+# 重新打包 rootfs\n\
+find . | cpio -H newc -o 2>/dev/null | gzip > /tmp/rootfs_custom.cpio.gz\n\
+\n\
+echo ""\n\
+echo "Starting QEMU with OP-TEE (ATF boot)..."\n\
+echo "(Press Ctrl+A then X to exit)"\n\
+echo ""\n\
+\n\
+qemu-system-aarch64 \\\n\
+    -nographic \\\n\
+    -machine virt,secure=on,gic-version=3,virtualization=false \\\n\
+    -cpu cortex-a57 \\\n\
+    -smp 1 \\\n\
+    -m 1024 \\\n\
+    -bios /optee/atf/flash.bin \\\n\
+    -device loader,file=/tmp/rootfs_custom.cpio.gz,addr=0x44000000 \\\n\
+    -no-reboot\n\
+\n\
+rm -rf $WORK_DIR /tmp/rootfs_custom.cpio.gz\n\
+' > /usr/local/bin/run_qemu.sh && chmod +x /usr/local/bin/run_qemu.sh
+
+# 快速测试脚本 (非交互式)
+RUN echo '#!/bin/bash\n\
+\n\
+TA_DIR=$1\n\
+TEST_CMD=${2:-"echo TA loaded successfully"}\n\
+TIMEOUT=${3:-10}\n\
+\n\
+if [ -z "$TA_DIR" ]; then\n\
+    echo "Usage: test_ta.sh <ta_directory> [test_command] [timeout]"\n\
+    exit 1\n\
+fi\n\
+\n\
+# 准备 rootfs\n\
+WORK_DIR=$(mktemp -d)\n\
+cd $WORK_DIR\n\
+zcat /optee/rootfs.cpio.gz | cpio -idm 2>/dev/null\n\
+\n\
+# 复制用户 TA\n\
+if [ -d "$TA_DIR" ]; then\n\
+    cp $TA_DIR/*.ta lib/optee_armtz/ 2>/dev/null || true\n\
+    echo "Loaded TAs:"\n\
+    ls lib/optee_armtz/*.ta 2>/dev/null\n\
+fi\n\
+\n\
+# 修改启动脚本，运行测试后自动退出\n\
+cat > etc/init.d/rcS << EOF\n\
+#!/bin/sh\n\
+mount -t proc proc /proc\n\
+mount -t sysfs sysfs /sys\n\
+/usr/sbin/tee-supplicant -d\n\
+sleep 1\n\
+echo ""\n\
+echo "========================================"\n\
+echo "  Running TA Test..."\n\
+echo "========================================"\n\
+echo ""\n\
+$TEST_CMD\n\
+echo ""\n\
+echo "========================================"\n\
+echo "  Test Complete!"\n\
+echo "========================================"\n\
+poweroff -f\n\
+EOF\n\
+chmod +x etc/init.d/rcS\n\
+\n\
+find . | cpio -H newc -o 2>/dev/null | gzip > /tmp/rootfs_test.cpio.gz\n\
+\n\
+echo ""\n\
+echo "Running QEMU test (timeout: ${TIMEOUT}s)..."\n\
+echo ""\n\
+\n\
+timeout $TIMEOUT qemu-system-aarch64 \\\n\
+    -nographic \\\n\
+    -machine virt,secure=on,gic-version=3,virtualization=false \\\n\
+    -cpu cortex-a57 \\\n\
+    -smp 1 \\\n\
+    -m 1024 \\\n\
+    -bios /optee/atf/flash.bin \\\n\
+    -device loader,file=/tmp/rootfs_test.cpio.gz,addr=0x44000000 \\\n\
+    -no-reboot 2>&1 || true\n\
+\n\
+rm -rf $WORK_DIR /tmp/rootfs_test.cpio.gz\n\
+' > /usr/local/bin/test_ta.sh && chmod +x /usr/local/bin/test_ta.sh
+
+# 简化模式 QEMU 运行脚本 (无 TrustZone，用于 Mac 开发环境)
+RUN echo '#!/bin/bash\n\
+\n\
+TA_DIR=${1:-}\n\
+CA_FILE=${2:-}\n\
+\n\
+# 准备 rootfs\n\
+WORK_DIR=$(mktemp -d)\n\
+cd $WORK_DIR\n\
+zcat /optee/rootfs.cpio.gz | cpio -idm 2>/dev/null\n\
+\n\
+# 复制用户 TA\n\
+if [ -n "$TA_DIR" ] && [ -d "$TA_DIR" ]; then\n\
+    echo "Loading TAs from: $TA_DIR"\n\
+    cp $TA_DIR/*.ta lib/optee_armtz/ 2>/dev/null || true\n\
+fi\n\
+\n\
+# 复制用户 CA\n\
+if [ -n "$CA_FILE" ] && [ -f "$CA_FILE" ]; then\n\
+    echo "Loading CA: $CA_FILE"\n\
+    cp $CA_FILE usr/bin/\n\
+    chmod +x usr/bin/$(basename $CA_FILE)\n\
+fi\n\
+\n\
+# 重新打包 rootfs\n\
+find . | cpio -H newc -o 2>/dev/null | gzip > /tmp/rootfs_custom.cpio.gz\n\
+\n\
+echo ""\n\
+echo "Starting QEMU (Simple Mode - No TrustZone)..."\n\
+echo "(Press Ctrl+A then X to exit)"\n\
+echo ""\n\
+\n\
+qemu-system-aarch64 \\\n\
+    -nographic \\\n\
+    -machine virt \\\n\
+    -cpu cortex-a57 \\\n\
+    -smp 2 \\\n\
+    -m 1024 \\\n\
+    -kernel /optee/Image \\\n\
+    -initrd /tmp/rootfs_custom.cpio.gz \\\n\
+    -append "console=ttyAMA0 rdinit=/sbin/init" \\\n\
+    -no-reboot\n\
+\n\
+rm -rf $WORK_DIR /tmp/rootfs_custom.cpio.gz\n\
+' > /usr/local/bin/run_qemu_simple.sh && chmod +x /usr/local/bin/run_qemu_simple.sh
+
+# 简化模式测试脚本 (非交互式，无 TrustZone)
+RUN echo '#!/bin/bash\n\
+\n\
+TA_DIR=$1\n\
+TEST_CMD=${2:-"echo TA loaded successfully"}\n\
+TIMEOUT=${3:-30}\n\
+\n\
+if [ -z "$TA_DIR" ]; then\n\
+    echo "Usage: test_ta_simple.sh <ta_directory> [test_command] [timeout]"\n\
+    exit 1\n\
+fi\n\
+\n\
+# 准备 rootfs\n\
+WORK_DIR=$(mktemp -d)\n\
+cd $WORK_DIR\n\
+zcat /optee/rootfs.cpio.gz | cpio -idm 2>/dev/null\n\
+\n\
+# 复制用户 TA\n\
+if [ -d "$TA_DIR" ]; then\n\
+    cp $TA_DIR/*.ta lib/optee_armtz/ 2>/dev/null || true\n\
+    echo "Loaded TAs:"\n\
+    ls lib/optee_armtz/*.ta 2>/dev/null\n\
+fi\n\
+\n\
+# 修改启动脚本\n\
+cat > etc/init.d/rcS << EOF\n\
+#!/bin/sh\n\
+mount -t proc proc /proc\n\
+mount -t sysfs sysfs /sys\n\
+echo ""\n\
+echo "========================================"\n\
+echo "  Simple Mode (No TrustZone)"\n\
+echo "========================================"\n\
+echo ""\n\
+echo "Note: tee-supplicant skipped in simple mode"\n\
+echo "Available TAs:"\n\
+ls /lib/optee_armtz/*.ta 2>/dev/null || echo "  (none)"\n\
+echo ""\n\
+echo "Running test command..."\n\
+$TEST_CMD\n\
+echo ""\n\
+echo "========================================"\n\
+echo "  Test Complete!"\n\
+echo "========================================"\n\
+poweroff -f\n\
+EOF\n\
+chmod +x etc/init.d/rcS\n\
+\n\
+find . | cpio -H newc -o 2>/dev/null | gzip > /tmp/rootfs_test.cpio.gz\n\
+\n\
+echo ""\n\
+echo "Running QEMU test - Simple Mode (timeout: ${TIMEOUT}s)..."\n\
+echo ""\n\
+\n\
+timeout $TIMEOUT qemu-system-aarch64 \\\n\
+    -nographic \\\n\
+    -machine virt \\\n\
+    -cpu cortex-a57 \\\n\
+    -smp 2 \\\n\
+    -m 1024 \\\n\
+    -kernel /optee/Image \\\n\
+    -initrd /tmp/rootfs_test.cpio.gz \\\n\
+    -append "console=ttyAMA0 rdinit=/sbin/init" \\\n\
+    -no-reboot 2>&1 || true\n\
+\n\
+rm -rf $WORK_DIR /tmp/rootfs_test.cpio.gz\n\
+' > /usr/local/bin/test_ta_simple.sh && chmod +x /usr/local/bin/test_ta_simple.sh
+
+# TA 验证脚本
+RUN echo '#!/bin/bash\n\
+TA_FILE=$1\n\
+if [ -z "$TA_FILE" ] || [ ! -f "$TA_FILE" ]; then\n\
+    echo "Usage: validate_ta.sh <ta_file>"\n\
+    exit 1\n\
+fi\n\
+\n\
+UUID=$(basename "$TA_FILE" .ta)\n\
+\n\
+echo "========================================"\n\
+echo "OP-TEE TA Validation Report"\n\
+echo "========================================"\n\
+echo ""\n\
+echo "[1] File: $(ls -lh $TA_FILE)"\n\
+echo "[2] Type: $(file $TA_FILE)"\n\
+echo "[3] UUID: $UUID"\n\
+echo ""\n\
+echo "[4] Header:"\n\
+xxd -l 32 $TA_FILE\n\
+echo ""\n\
+\n\
+# 检查 ELF\n\
+ELF_FILE="${TA_FILE%.ta}.stripped.elf"\n\
+if [ -f "$ELF_FILE" ]; then\n\
+    echo "[5] ELF Sections:"\n\
+    aarch64-linux-gnu-objdump -h $ELF_FILE | grep -E "Idx|text|data|rodata"\n\
+    echo ""\n\
+    echo "[6] Entry Points:"\n\
+    aarch64-linux-gnu-nm ${TA_FILE%.ta}.elf 2>/dev/null | grep -E "TA_Create|TA_Open|TA_Invoke|TA_Close|TA_Destroy" || echo "  (stripped)"\n\
+fi\n\
+echo ""\n\
+echo "========================================"\n\
+echo "Validation Complete"\n\
+echo "========================================"\n\
+' > /usr/local/bin/validate_ta.sh && chmod +x /usr/local/bin/validate_ta.sh
+
+# 创建 TA 目录
+RUN mkdir -p /optee/ta /workspace
+
+WORKDIR /workspace
+
+# 默认命令
+CMD ["/bin/bash"]

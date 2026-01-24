@@ -25,6 +25,9 @@ class TAGenerator(BaseTool):
 #include <tee_internal_api_extensions.h>
 #include "{name}_ta.h"
 
+/* Forward declarations */
+static TEE_Result process_command(uint32_t param_types, TEE_Param params[4]);
+
 TEE_Result TA_CreateEntryPoint(void) {{
     DMSG("TA_CreateEntryPoint");
     return TEE_SUCCESS;
@@ -90,6 +93,24 @@ include $(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk
     SUB_MK_TEMPLATE = '''srcs-y += {name}_ta.c
 '''
 
+    USER_TA_HEADER_DEFINES_TEMPLATE = '''#ifndef USER_TA_HEADER_DEFINES_H
+#define USER_TA_HEADER_DEFINES_H
+
+#include "{name}_ta.h"
+
+#define TA_UUID {name_upper}_UUID
+
+#define TA_FLAGS                    (TA_FLAG_EXEC_DDR | TA_FLAG_SINGLE_INSTANCE)
+#define TA_STACK_SIZE               (2 * 1024)
+#define TA_DATA_SIZE                (32 * 1024)
+
+#define TA_CURRENT_TA_EXT_PROPERTIES \\
+    {{ "gp.ta.description", USER_TA_PROP_TYPE_STRING, "{name} TA" }}, \\
+    {{ "gp.ta.version", USER_TA_PROP_TYPE_U32, &(const uint32_t){{ 0x0010 }} }}
+
+#endif /* USER_TA_HEADER_DEFINES_H */
+'''
+
     async def execute(
         self, name: str, output_dir: str, ta_uuid: str = None
     ) -> ToolResult:
@@ -116,6 +137,9 @@ include $(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk
                 ),
                 "Makefile": self.MAKEFILE_TEMPLATE.format(uuid=ta_uuid),
                 "sub.mk": self.SUB_MK_TEMPLATE.format(name=name),
+                "user_ta_header_defines.h": self.USER_TA_HEADER_DEFINES_TEMPLATE.format(
+                    name=name, name_upper=name.upper()
+                ),
             }
 
             created_files = []
