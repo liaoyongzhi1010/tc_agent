@@ -1,7 +1,7 @@
 """QEMU OP-TEE 运行工具 - 在 QEMU 中测试 TA"""
 import asyncio
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from app.tools.base import BaseTool
 from app.schemas.models import ToolResult
@@ -25,6 +25,7 @@ class QemuRunTool(BaseTool):
         timeout: int = 120,  # Mac Docker 环境需要更长时间
         interactive: bool = False,
         secure_mode: bool = False,  # True: ATF+TrustZone (Linux), False: 简化模式 (Mac)
+        ca_file: str = None,
     ) -> ToolResult:
         """
         在 QEMU 中运行 TA 测试
@@ -46,6 +47,12 @@ class QemuRunTool(BaseTool):
             if not ta_files:
                 return ToolResult(success=False, error=f"目录中没有 .ta 文件: {ta_dir}")
 
+            ca_path = None
+            if ca_file:
+                ca_path = Path(ca_file).resolve()
+                if not ca_path.exists():
+                    return ToolResult(success=False, error=f"CA 文件不存在: {ca_file}")
+
             # 检查 Docker 镜像
             check_result = await self._run_command(f"docker images -q {OPTEE_IMAGE_NAME}")
             if not check_result["stdout"].strip():
@@ -57,11 +64,17 @@ class QemuRunTool(BaseTool):
             if interactive:
                 # 交互模式 - 启动 QEMU shell
                 qemu_script = "run_qemu.sh" if secure_mode else "run_qemu_simple.sh"
+                ca_mount = ""
+                ca_arg = ""
+                if ca_path:
+                    ca_mount = f"-v {ca_path.parent}:/workspace/ca "
+                    ca_arg = f"/workspace/ca/{ca_path.name}"
                 cmd = (
                     f"docker run --rm -it "
                     f"-v {ta_path}:/workspace/ta "
+                    f"{ca_mount}"
                     f"{OPTEE_IMAGE_NAME} "
-                    f"{qemu_script} /workspace/ta"
+                    f"{qemu_script} /workspace/ta {ca_arg}"
                 )
                 mode_desc = "ATF+TrustZone 模式" if secure_mode else "简化模式（无 TrustZone）"
                 return ToolResult(
@@ -76,11 +89,12 @@ class QemuRunTool(BaseTool):
             else:
                 # 非交互模式 - 自动运行测试
                 test_script = "test_ta.sh" if secure_mode else "test_ta_simple.sh"
-                cmd = (
-                    f"docker run --rm "
-                    f"-v {ta_path}:/workspace/ta "
-                    f"{OPTEE_IMAGE_NAME} "
-                    f"{test_script} /workspace/ta '{test_command}' {timeout}"
+                cmd = self._build_qemu_command(
+                    ta_dir=ta_path,
+                    test_script=test_script,
+                    test_command=test_command,
+                    timeout=timeout,
+                    ca_file=ca_path,
                 )
 
                 mode_desc = "ATF+TrustZone" if secure_mode else "简化模式"
@@ -106,6 +120,27 @@ class QemuRunTool(BaseTool):
         except Exception as e:
             logger.error("QEMU 运行失败", error=str(e))
             return ToolResult(success=False, error=str(e))
+
+    def _build_qemu_command(
+        self,
+        ta_dir: Path,
+        test_script: str,
+        test_command: str,
+        timeout: int,
+        ca_file: Optional[Path],
+    ) -> str:
+        ca_mount = ""
+        ca_arg = ""
+        if ca_file:
+            ca_mount = f"-v {ca_file.parent}:/workspace/ca "
+            ca_arg = f"/workspace/ca/{ca_file.name}"
+        return (
+            f"docker run --rm "
+            f"-v {ta_dir}:/workspace/ta "
+            f"{ca_mount}"
+            f"{OPTEE_IMAGE_NAME} "
+            f"{test_script} /workspace/ta {ca_arg} '{test_command}' {timeout}"
+        )
 
     async def _run_command(self, cmd: str, timeout: int = 120) -> Dict[str, Any]:
         """运行 shell 命令"""
@@ -150,5 +185,9 @@ class QemuRunTool(BaseTool):
             "secure_mode": {
                 "type": "boolean",
                 "description": "安全模式：true 使用 ATF+TrustZone（Linux 生产环境），false 使用简化模式（Mac 开发环境，默认）",
+            },
+            "ca_file": {
+                "type": "string",
+                "description": "CA 可执行文件路径（可选）",
             },
         }

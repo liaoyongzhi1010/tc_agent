@@ -2,7 +2,7 @@
 import asyncio
 import os
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from app.tools.base import BaseTool
 from app.schemas.models import ToolResult
@@ -27,6 +27,7 @@ class DockerBuildTool(BaseTool):
         source_dir: str,
         build_type: str = "ta",
         output_dir: str = None,
+        ta_dir: str = None,
     ) -> ToolResult:
         """
         执行Docker编译
@@ -64,7 +65,8 @@ class DockerBuildTool(BaseTool):
             if build_type == "ta":
                 result = await self._build_ta(source_path, output_path)
             else:
-                result = await self._build_ca(source_path, output_path)
+                ta_path = Path(ta_dir).resolve() if ta_dir else None
+                result = await self._build_ca(source_path, output_path, ta_path)
 
             return result
 
@@ -148,18 +150,31 @@ class DockerBuildTool(BaseTool):
                 error="编译完成但未找到.ta文件，请检查Makefile配置"
             )
 
-    async def _build_ca(self, source_path: Path, output_path: Path) -> ToolResult:
-        """编译CA"""
-        cmd = (
+    def _build_ca_command(
+        self, source_path: Path, output_path: Path, ta_path: Optional[Path]
+    ) -> str:
+        extra_mount = ""
+        if ta_path:
+            if not ta_path.exists():
+                raise FileNotFoundError(f"TA 目录不存在: {ta_path}")
+            extra_mount = f"-v {ta_path}:/workspace/{ta_path.name} "
+        return (
             f"docker run --rm "
             f"-v {source_path}:/workspace/ca "
             f"-v {output_path}:/workspace/output "
+            f"{extra_mount}"
             f"-w /workspace/ca "
             f"{OPTEE_IMAGE_NAME} "
             f"bash -c 'make CROSS_COMPILE=aarch64-linux-gnu- "
             f"TEEC_EXPORT=/optee/optee_client/out/export/usr "
             f"-j$(nproc) && find . -maxdepth 1 -type f -executable -exec cp {{}} /workspace/output/ \\;'"
         )
+
+    async def _build_ca(
+        self, source_path: Path, output_path: Path, ta_path: Optional[Path]
+    ) -> ToolResult:
+        """编译CA"""
+        cmd = self._build_ca_command(source_path, output_path, ta_path)
 
         logger.info("编译CA", source=str(source_path))
         result = await self._run_command(cmd, timeout=300)
@@ -222,5 +237,9 @@ class DockerBuildTool(BaseTool):
             "output_dir": {
                 "type": "string",
                 "description": "输出目录（可选，默认与源代码目录相同）",
+            },
+            "ta_dir": {
+                "type": "string",
+                "description": "TA 目录路径（CA 编译时可选，含头文件）",
             },
         }

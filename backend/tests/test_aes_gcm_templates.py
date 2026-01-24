@@ -24,3 +24,14 @@ def test_ca_generator_aes_gcm_template_includes_commands():
     ca_c = result["aes_demo.c"]
     assert "TA_CMD_AES_GCM_ENCRYPT" in ca_c
     assert "TA_CMD_AES_GCM_DECRYPT" in ca_c
+
+def test_aes_gcm_template_short_buffer_sets_size():
+    gen = TAGenerator()
+    result = gen._build_files(
+        name="aes_demo",
+        ta_uuid="12345678-1234-5678-1234-567812345678",
+        template="aes_gcm_simple",
+    )
+    ta_c = result["aes_demo_ta.c"]
+    assert "params[3].memref.size = plain_len + TAG_LEN;" in ta_c
+    assert "params[3].memref.size = cipher_len;" in ta_c

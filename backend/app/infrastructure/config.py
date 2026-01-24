@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     rag_parent_chunk_size: int = 1000
     rag_top_k: int = 5
 
+    # QEMU配置
+    qemu_mode: str = "simple"  # simple, secure
+    qemu_test_command: Optional[str] = None
+
     # Agent配置
     agent_max_iterations: int = 30
 

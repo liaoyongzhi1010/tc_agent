@@ -352,12 +352,25 @@ rm -rf $WORK_DIR /tmp/rootfs_custom.cpio.gz\n\
 RUN echo '#!/bin/bash\n\
 \n\
 TA_DIR=$1\n\
-TEST_CMD=${2:-"echo TA loaded successfully"}\n\
-TIMEOUT=${3:-10}\n\
+ARG2=$2\n\
+ARG3=$3\n\
+ARG4=$4\n\
+CA_FILE=""\n\
+TEST_CMD=""\n\
+TIMEOUT=10\n\
 \n\
 if [ -z "$TA_DIR" ]; then\n\
-    echo "Usage: test_ta.sh <ta_directory> [test_command] [timeout]"\n\
+    echo "Usage: test_ta.sh <ta_directory> [ca_file|test_command] [test_command] [timeout]"\n\
     exit 1\n\
+fi\n\
+\n\
+if [ -n "$ARG2" ] && [ -f "$ARG2" ]; then\n\
+    CA_FILE="$ARG2"\n\
+    TEST_CMD=${ARG3:-"/usr/bin/$(basename "$CA_FILE")"}\n\
+    TIMEOUT=${ARG4:-10}\n\
+else\n\
+    TEST_CMD=${ARG2:-"echo TA loaded successfully"}\n\
+    TIMEOUT=${ARG3:-10}\n\
 fi\n\
 \n\
 # 准备 rootfs\n\
@@ -370,6 +383,13 @@ if [ -d "$TA_DIR" ]; then\n\
     cp $TA_DIR/*.ta lib/optee_armtz/ 2>/dev/null || true\n\
     echo "Loaded TAs:"\n\
     ls lib/optee_armtz/*.ta 2>/dev/null\n\
+fi\n\
+\n\
+# 复制用户 CA\n\
+if [ -n "$CA_FILE" ] && [ -f "$CA_FILE" ]; then\n\
+    echo "Loading CA: $CA_FILE"\n\
+    cp $CA_FILE usr/bin/\n\
+    chmod +x usr/bin/$(basename $CA_FILE)\n\
 fi\n\
 \n\
 # 修改启动脚本，运行测试后自动退出\n\
@@ -385,6 +405,9 @@ echo "  Running TA Test..."\n\
 echo "========================================"\n\
 echo ""\n\
 $TEST_CMD\n\
+RET=$?\n\
+echo "CA_EXIT_CODE=$RET"\n\
+echo "=== TEST_COMPLETE ==="\n\
 echo ""\n\
 echo "========================================"\n\
 echo "  Test Complete!"\n\
@@ -462,12 +485,25 @@ rm -rf $WORK_DIR /tmp/rootfs_custom.cpio.gz\n\
 RUN echo '#!/bin/bash\n\
 \n\
 TA_DIR=$1\n\
-TEST_CMD=${2:-"echo TA loaded successfully"}\n\
-TIMEOUT=${3:-30}\n\
+ARG2=$2\n\
+ARG3=$3\n\
+ARG4=$4\n\
+CA_FILE=""\n\
+TEST_CMD=""\n\
+TIMEOUT=30\n\
 \n\
 if [ -z "$TA_DIR" ]; then\n\
-    echo "Usage: test_ta_simple.sh <ta_directory> [test_command] [timeout]"\n\
+    echo "Usage: test_ta_simple.sh <ta_directory> [ca_file|test_command] [test_command] [timeout]"\n\
     exit 1\n\
+fi\n\
+\n\
+if [ -n "$ARG2" ] && [ -f "$ARG2" ]; then\n\
+    CA_FILE="$ARG2"\n\
+    TEST_CMD=${ARG3:-"echo TA loaded successfully"}\n\
+    TIMEOUT=${ARG4:-30}\n\
+else\n\
+    TEST_CMD=${ARG2:-"echo TA loaded successfully"}\n\
+    TIMEOUT=${ARG3:-30}\n\
 fi\n\
 \n\
 # 准备 rootfs\n\
@@ -480,6 +516,13 @@ if [ -d "$TA_DIR" ]; then\n\
     cp $TA_DIR/*.ta lib/optee_armtz/ 2>/dev/null || true\n\
     echo "Loaded TAs:"\n\
     ls lib/optee_armtz/*.ta 2>/dev/null\n\
+fi\n\
+\n\
+# 复制用户 CA\n\
+if [ -n "$CA_FILE" ] && [ -f "$CA_FILE" ]; then\n\
+    echo "Loading CA: $CA_FILE"\n\
+    cp $CA_FILE usr/bin/\n\
+    chmod +x usr/bin/$(basename $CA_FILE)\n\
 fi\n\
 \n\
 # 修改启动脚本\n\
@@ -498,6 +541,10 @@ ls /lib/optee_armtz/*.ta 2>/dev/null || echo "  (none)"\n\
 echo ""\n\
 echo "Running test command..."\n\
 $TEST_CMD\n\
+if [ -n "$CA_FILE" ]; then\n\
+    echo "CA_EXIT_CODE=SKIPPED"\n\
+fi\n\
+echo "=== TEST_COMPLETE ==="\n\
 echo ""\n\
 echo "========================================"\n\
 echo "  Test Complete!"\n\

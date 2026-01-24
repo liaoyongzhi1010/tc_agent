@@ -71,6 +71,7 @@ class ToolRegistry:
         from app.tools.tee.docker_build import DockerBuildTool
         from app.tools.tee.ta_validate import TAValidateTool
         from app.tools.tee.qemu_run import QemuRunTool
+        from app.tools.tee.workflow_runner import WorkflowRunner
 
         self.register(TAGenerator(), "tee")
         self.register(CAGenerator(), "tee")
@@ -78,5 +79,6 @@ class ToolRegistry:
         self.register(DockerBuildTool(), "tee")
         self.register(TAValidateTool(), "tee")
         self.register(QemuRunTool(), "tee")
+        self.register(WorkflowRunner(), "tee")
 
         logger.info("工具加载完成", total=len(self._tools))

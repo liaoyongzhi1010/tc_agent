@@ -85,6 +85,16 @@ cp .env.example .env
 # 编辑 .env 文件，填入至少一个 LLM 的 API Key
 ```
 
+**QEMU 验证配置（后端 .env）**
+
+```dotenv
+# simple: Mac 开发快速验证
+# secure: 生产标准（QEMU 内执行 CA，CA_EXIT_CODE=0 才算成功）
+TC_AGENT_QEMU_MODE=simple
+# 可选：覆盖默认测试命令
+TC_AGENT_QEMU_TEST_COMMAND=
+```
+
 3. **安装 VS Code 插件依赖**
 
 ```bash

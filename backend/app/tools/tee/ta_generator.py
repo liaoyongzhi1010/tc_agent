@@ -163,6 +163,7 @@ static TEE_Result cmd_encrypt(uint32_t param_types, TEE_Param params[4]) {{
 
     if (out_len < plain_len + TAG_LEN) {{
         EMSG("Output buffer too small");
+        params[3].memref.size = plain_len + TAG_LEN;
         return TEE_ERROR_SHORT_BUFFER;
     }}
 
@@ -218,6 +219,7 @@ static TEE_Result cmd_decrypt(uint32_t param_types, TEE_Param params[4]) {{
 
     if (out_len < cipher_len) {{
         EMSG("Output buffer too small");
+        params[3].memref.size = cipher_len;
         return TEE_ERROR_SHORT_BUFFER;
     }}
 
