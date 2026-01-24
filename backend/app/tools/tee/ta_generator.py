@@ -393,10 +393,14 @@ include $(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk
         output_dir: str,
         ta_uuid: str = None,
         template: str = None,
+        overwrite: bool = True,
     ) -> ToolResult:
         try:
             ta_uuid = ta_uuid or str(uuid.uuid4())
             output_path = Path(output_dir) / f"{name}_ta"
+            if output_path.exists() and not overwrite:
+                return ToolResult(success=False, error=f"输出目录已存在: {output_path}")
+            existed_before = output_path.exists()
             output_path.mkdir(parents=True, exist_ok=True)
             files = self._build_files(name=name, ta_uuid=ta_uuid, template=template)
 
@@ -414,6 +418,7 @@ include $(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk
                     "uuid": ta_uuid,
                     "output_dir": str(output_path),
                     "files": created_files,
+                    "overwritten": existed_before,
                 },
             )
         except Exception as e:
@@ -429,5 +434,9 @@ include $(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk
                 "type": "string",
                 "enum": ["aes_gcm_simple"],
                 "description": "可选模板：aes_gcm_simple",
+            },
+            "overwrite": {
+                "type": "boolean",
+                "description": "是否覆盖已存在目录(默认true)",
             },
         }
