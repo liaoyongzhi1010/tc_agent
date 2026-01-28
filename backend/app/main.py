@@ -35,6 +35,8 @@ async def lifespan(app: FastAPI):
     logger.info("TC Agent后端关闭中...")
 
 
+CORS_ALLOW_ORIGIN_REGEX = r"^vscode-webview://.*$|^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+
 app = FastAPI(
     title="TC Agent Backend",
     description="可信计算开发助手后端服务",
@@ -45,7 +47,8 @@ app = FastAPI(
 # CORS配置(仅允许本地VS Code插件访问)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["vscode-webview://*", "http://127.0.0.1:*", "http://localhost:*"],
+    allow_origins=[],
+    allow_origin_regex=CORS_ALLOW_ORIGIN_REGEX,
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -7,8 +7,18 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Programming Languages", "Machine Learning", "Other"],
-  "keywords": ["trusted computing", "OP-TEE", "TrustZone", "TEE", "AI assistant"],
+  "categories": [
+    "Programming Languages",
+    "Machine Learning",
+    "Other"
+  ],
+  "keywords": [
+    "trusted computing",
+    "OP-TEE",
+    "TrustZone",
+    "TEE",
+    "AI assistant"
+  ],
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -74,7 +84,11 @@
         },
         "tcAgent.llm.provider": {
           "type": "string",
-          "enum": ["qwen", "zhipu", "doubao"],
+          "enum": [
+            "qwen",
+            "zhipu",
+            "doubao"
+          ],
           "default": "qwen",
           "description": "LLM提供商",
           "enumDescriptions": [
@@ -110,7 +124,10 @@
         },
         "tcAgent.embedding.mode": {
           "type": "string",
-          "enum": ["local", "remote"],
+          "enum": [
+            "local",
+            "remote"
+          ],
           "default": "local",
           "description": "Embedding模式",
           "enumDescriptions": [

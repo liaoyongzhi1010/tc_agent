@@ -1,4 +1,6 @@
 """智谱GLM LLM"""
+import asyncio
+import threading
 from typing import AsyncIterator, List
 from zhipuai import ZhipuAI
 
@@ -21,7 +23,8 @@ class ZhipuLLM(BaseLLM):
         model = config.model if config else self.model
         temperature = config.temperature if config else 0.7
 
-        response = self.client.chat.completions.create(
+        response = await asyncio.to_thread(
+            self.client.chat.completions.create,
             model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
@@ -33,24 +36,42 @@ class ZhipuLLM(BaseLLM):
         """流式生成"""
         model = config.model if config else self.model
         temperature = config.temperature if config else 0.7
+        queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
 
-        response = self.client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            stream=True,
-        )
+        def _worker() -> None:
+            try:
+                response = self.client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=temperature,
+                    stream=True,
+                )
+                for chunk in response:
+                    content = chunk.choices[0].delta.content
+                    if content:
+                        loop.call_soon_threadsafe(queue.put_nowait, content)
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+            except Exception as exc:
+                loop.call_soon_threadsafe(queue.put_nowait, exc)
 
-        for chunk in response:
-            if chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+        threading.Thread(target=_worker, daemon=True).start()
+
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
 
     async def generate_chat(self, messages: List[dict], config: LLMConfig = None) -> str:
         """聊天生成"""
         model = config.model if config else self.model
         temperature = config.temperature if config else 0.7
 
-        response = self.client.chat.completions.create(
+        response = await asyncio.to_thread(
+            self.client.chat.completions.create,
             model=model,
             messages=messages,
             temperature=temperature,

@@ -174,6 +174,13 @@ class ReActAgent:
 
     async def _execute_tool(self, action: Action) -> str:
         """执行工具并返回观察结果"""
+        if action.input.get("__parse_error"):
+            raw = action.input.get("__raw_input", "")
+            return (
+                "输入格式错误: 需要提供有效的JSON对象，键名必须与工具参数名一致。"
+                f" 原始输入: {raw}"
+            )
+
         tool = self.tools.get_tool(action.tool)
 
         if not tool:

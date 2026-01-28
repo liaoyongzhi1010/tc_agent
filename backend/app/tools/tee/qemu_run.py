@@ -1,5 +1,6 @@
 """QEMU OP-TEE 运行工具 - 在 QEMU 中测试 TA"""
 import asyncio
+import shlex
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -67,11 +68,11 @@ class QemuRunTool(BaseTool):
                 ca_mount = ""
                 ca_arg = ""
                 if ca_path:
-                    ca_mount = f"-v {ca_path.parent}:/workspace/ca "
-                    ca_arg = f"/workspace/ca/{ca_path.name}"
+                    ca_mount = f"-v {shlex.quote(str(ca_path.parent))}:{shlex.quote('/workspace/ca')} "
+                    ca_arg = shlex.quote(f"/workspace/ca/{ca_path.name}")
                 cmd = (
                     f"docker run --rm -it "
-                    f"-v {ta_path}:/workspace/ta "
+                    f"-v {shlex.quote(str(ta_path))}:{shlex.quote('/workspace/ta')} "
                     f"{ca_mount}"
                     f"{OPTEE_IMAGE_NAME} "
                     f"{qemu_script} /workspace/ta {ca_arg}"
@@ -101,7 +102,7 @@ class QemuRunTool(BaseTool):
                 logger.info(f"运行 QEMU 测试 ({mode_desc})", ta_dir=str(ta_path), command=test_command)
                 result = await self._run_command(cmd, timeout=timeout + 30)
 
-                if result["returncode"] != 0 and "Test Complete" not in result["stdout"]:
+                if result["returncode"] != 0 and "TEST_COMPLETE" not in result["stdout"]:
                     return ToolResult(
                         success=False,
                         error=f"QEMU 测试失败:\n{result['stderr'] or result['stdout']}"
@@ -132,14 +133,14 @@ class QemuRunTool(BaseTool):
         ca_mount = ""
         ca_arg = ""
         if ca_file:
-            ca_mount = f"-v {ca_file.parent}:/workspace/ca "
-            ca_arg = f"/workspace/ca/{ca_file.name}"
+            ca_mount = f"-v {shlex.quote(str(ca_file.parent))}:{shlex.quote('/workspace/ca')} "
+            ca_arg = shlex.quote(f"/workspace/ca/{ca_file.name}")
         return (
             f"docker run --rm "
-            f"-v {ta_dir}:/workspace/ta "
+            f"-v {shlex.quote(str(ta_dir))}:{shlex.quote('/workspace/ta')} "
             f"{ca_mount}"
             f"{OPTEE_IMAGE_NAME} "
-            f"{test_script} /workspace/ta {ca_arg} '{test_command}' {timeout}"
+            f"{test_script} /workspace/ta {ca_arg} {shlex.quote(test_command)} {timeout}"
         )
 
     async def _run_command(self, cmd: str, timeout: int = 120) -> Dict[str, Any]:

@@ -923,6 +923,12 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
             opacity: 1;
         }
 
+        .code-status {
+            font-size: 12px;
+            opacity: 0.7;
+            margin-bottom: 8px;
+        }
+
         .toolbar-spacer {
             flex: 1;
         }
@@ -1004,6 +1010,11 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
         let currentAssistantMsg = null;
         let totalSteps = 0;
         let completedSteps = 0;
+        let codeRunTimer = null;
+        let codeRunStart = 0;
+        let codeRunActive = false;
+        let codeRunHasFinal = false;
+        let currentCodeStatus = '';
 
         // 简单的语法高亮
         function highlightCode(code, lang) {
@@ -1246,6 +1257,78 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
             }
         }
 
+        function formatElapsed(ms) {
+            const totalSeconds = Math.floor(ms / 1000);
+            const minutes = Math.floor(totalSeconds / 60);
+            const seconds = totalSeconds % 60;
+            if (minutes > 0) {
+                return minutes + 'm ' + String(seconds).padStart(2, '0') + 's';
+            }
+            return totalSeconds + 's';
+        }
+
+        function ensureCodeStatusElement(msg) {
+            let statusEl = msg.querySelector('.code-status');
+            if (statusEl) return statusEl;
+
+            const content = msg.querySelector('.message-content');
+            if (!content) return null;
+
+            statusEl = document.createElement('div');
+            statusEl.className = 'code-status';
+            statusEl.textContent = currentCodeStatus || '执行中';
+
+            const agentEvents = content.querySelector('.agent-events');
+            if (agentEvents) {
+                content.insertBefore(statusEl, agentEvents);
+            } else {
+                content.prepend(statusEl);
+            }
+            return statusEl;
+        }
+
+        function updateCodeStatus(statusText) {
+            currentCodeStatus = statusText;
+            if (!currentAssistantMsg) return;
+
+            const indicator = currentAssistantMsg.querySelector('.working-indicator');
+            if (indicator) {
+                indicator.textContent = statusText;
+                return;
+            }
+
+            const statusEl = ensureCodeStatusElement(currentAssistantMsg);
+            if (statusEl) {
+                statusEl.textContent = statusText;
+            }
+        }
+
+        function startCodeRun() {
+            codeRunActive = true;
+            codeRunHasFinal = false;
+            codeRunStart = Date.now();
+            updateCodeStatus('执行中 · 已运行 0s');
+            if (codeRunTimer) {
+                clearInterval(codeRunTimer);
+            }
+            codeRunTimer = setInterval(() => {
+                if (!codeRunActive) return;
+                const elapsed = formatElapsed(Date.now() - codeRunStart);
+                updateCodeStatus('执行中 · 已运行 ' + elapsed);
+            }, 1000);
+        }
+
+        function finishCodeRun(statusText) {
+            codeRunActive = false;
+            if (codeRunTimer) {
+                clearInterval(codeRunTimer);
+                codeRunTimer = null;
+            }
+            if (statusText) {
+                updateCodeStatus(statusText);
+            }
+        }
+
         // 更新助手消息内容
         function updateAssistantMessage(msg, content, sources = null) {
             let html = '';
@@ -1329,6 +1412,9 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
             event.appendChild(contentEl);
 
             eventContainer.appendChild(event);
+            if (currentCodeStatus) {
+                updateCodeStatus(currentCodeStatus);
+            }
             scrollToBottom();
         }
 
@@ -1474,7 +1560,7 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
                     break;
 
                 case 'codeStart':
-                    // 已经有 currentAssistantMsg
+                    startCodeRun();
                     break;
 
                 case 'thought':
@@ -1499,10 +1585,17 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
                     if (currentAssistantMsg) {
                         showFinalResult(currentAssistantMsg, message.answer);
                     }
+                    codeRunHasFinal = true;
+                    finishCodeRun('✅ 执行完成');
                     currentSources = null;
                     break;
 
                 case 'codeComplete':
+                    if (!codeRunHasFinal) {
+                        finishCodeRun('✅ 执行结束（无最终输出）');
+                    } else {
+                        finishCodeRun('✅ 执行完成');
+                    }
                     currentSources = null;
                     break;
 
@@ -1510,6 +1603,8 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
                     if (currentAssistantMsg) {
                         currentAssistantMsg.querySelector('.message-content').innerHTML = '<div class="error">❌ ' + message.message + '</div>';
                     }
+                    codeRunHasFinal = true;
+                    finishCodeRun();
                     currentSources = null;
                     break;
             }

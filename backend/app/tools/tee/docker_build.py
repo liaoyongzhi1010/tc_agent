@@ -1,6 +1,7 @@
 """OP-TEE Docker编译工具"""
 import asyncio
 import os
+import shlex
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -89,7 +90,10 @@ class DockerBuildTool(BaseTool):
             return {"success": False, "error": f"Dockerfile不存在: {dockerfile_full_path}"}
 
         docker_dir = dockerfile_full_path.parent
-        cmd = f"docker build -t {OPTEE_IMAGE_NAME} -f {dockerfile_full_path} {docker_dir}"
+        cmd = (
+            f"docker build -t {OPTEE_IMAGE_NAME} "
+            f"-f {shlex.quote(str(dockerfile_full_path))} {shlex.quote(str(docker_dir))}"
+        )
 
         logger.info("开始构建Docker镜像", cmd=cmd)
         result = await self._run_command(cmd, timeout=1800)  # 30分钟超时
@@ -104,8 +108,8 @@ class DockerBuildTool(BaseTool):
         # Docker运行命令
         cmd = (
             f"docker run --rm "
-            f"-v {source_path}:/workspace/ta "
-            f"-v {output_path}:/workspace/output "
+            f"-v {shlex.quote(str(source_path))}:{shlex.quote('/workspace/ta')} "
+            f"-v {shlex.quote(str(output_path))}:{shlex.quote('/workspace/output')} "
             f"-w /workspace/ta "
             f"{OPTEE_IMAGE_NAME} "
             f"bash -c 'make CROSS_COMPILE=aarch64-linux-gnu- "
@@ -157,11 +161,13 @@ class DockerBuildTool(BaseTool):
         if ta_path:
             if not ta_path.exists():
                 raise FileNotFoundError(f"TA 目录不存在: {ta_path}")
-            extra_mount = f"-v {ta_path}:/workspace/{ta_path.name} "
+            extra_mount = (
+                f"-v {shlex.quote(str(ta_path))}:{shlex.quote(f'/workspace/{ta_path.name}')} "
+            )
         return (
             f"docker run --rm "
-            f"-v {source_path}:/workspace/ca "
-            f"-v {output_path}:/workspace/output "
+            f"-v {shlex.quote(str(source_path))}:{shlex.quote('/workspace/ca')} "
+            f"-v {shlex.quote(str(output_path))}:{shlex.quote('/workspace/output')} "
             f"{extra_mount}"
             f"-w /workspace/ca "
             f"{OPTEE_IMAGE_NAME} "

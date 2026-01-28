@@ -93,5 +93,5 @@ def get_logger(name: str, component: str = "backend") -> StructuredLogger:
         component: 组件名称，用于日志目录分类 (如 backend, extension 等)
     """
     from app.infrastructure.config import settings
-    log_dir = settings.data_dir / "logs" / component if not settings.debug else None
+    log_dir = settings.data_dir.parent / "logs" / component if not settings.debug else None
     return StructuredLogger.get_logger(name, log_dir)

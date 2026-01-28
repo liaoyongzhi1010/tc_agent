@@ -66,8 +66,12 @@ class AgentOutputParser:
                     input_str = re.sub(r"```", "", input_str)
                     tool_input = json.loads(input_str)
                 except json.JSONDecodeError:
-                    # 如果不是JSON，作为单个参数处理
-                    tool_input = {"input": input_str}
+                    tool_input = {
+                        "__parse_error": "invalid_json",
+                        "__raw_input": input_str,
+                    }
+            else:
+                tool_input = {"__parse_error": "missing_input", "__raw_input": ""}
 
             # 提取思考内容
             think_match = re.search(

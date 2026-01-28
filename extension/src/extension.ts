@@ -127,15 +127,19 @@ export async function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // 自动启动后端
-    try {
-        await backendManager.start();
-        console.log('TC Agent backend started');
-    } catch (error) {
-        console.error('Failed to start backend:', error);
-        vscode.window.showWarningMessage(
-            'TC Agent 后端启动失败，请检查Python环境配置'
-        );
+    // 自动启动后端（测试环境可禁用）
+    if (process.env.TC_AGENT_DISABLE_BACKEND_AUTO_START === '1') {
+        console.log('TC Agent backend auto-start disabled');
+    } else {
+        try {
+            await backendManager.start();
+            console.log('TC Agent backend started');
+        } catch (error) {
+            console.error('Failed to start backend:', error);
+            vscode.window.showWarningMessage(
+                'TC Agent 后端启动失败，请检查Python环境配置'
+            );
+        }
     }
 
     console.log('TC Agent is now active!');

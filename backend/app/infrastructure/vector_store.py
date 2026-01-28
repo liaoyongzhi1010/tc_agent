@@ -1,4 +1,5 @@
 """Chroma向量存储管理器"""
+import asyncio
 import chromadb
 from chromadb.config import Settings
 from pathlib import Path
@@ -206,12 +207,20 @@ class MultiCollectionRetriever:
 
 # 全局实例
 _vector_store: Optional[VectorStoreManager] = None
+_vector_store_lock = asyncio.Lock()
 
 
 async def get_vector_store() -> VectorStoreManager:
     """获取向量存储实例(单例)"""
     global _vector_store
-    if _vector_store is None:
-        _vector_store = VectorStoreManager()
-        await _vector_store.initialize()
+    if _vector_store is not None and _vector_store._initialized:
+        return _vector_store
+
+    async with _vector_store_lock:
+        if _vector_store is None:
+            manager = VectorStoreManager()
+            await manager.initialize()
+            _vector_store = manager
+        elif not _vector_store._initialized:
+            await _vector_store.initialize()
     return _vector_store
