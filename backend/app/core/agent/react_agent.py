@@ -1,4 +1,5 @@
 """ReAct Agent实现"""
+import asyncio
 import traceback
 from typing import AsyncIterator, List, Optional
 from dataclasses import dataclass, field
@@ -35,7 +36,11 @@ class ReActAgent:
         self.parser = AgentOutputParser()
 
     async def run(
-        self, task: str, workflow: Optional[Workflow] = None, workspace_root: Optional[str] = None
+        self,
+        task: str,
+        workflow: Optional[Workflow] = None,
+        workspace_root: Optional[str] = None,
+        cancel_event: Optional[asyncio.Event] = None,
     ) -> AsyncIterator[AgentEvent]:
         """执行任务，返回事件流"""
         logger.info("Agent开始执行", task=task[:50], workspace=workspace_root)
@@ -45,6 +50,10 @@ class ReActAgent:
         # 如果有workflow，按步骤执行
         if workflow and workflow.steps:
             for i, step in enumerate(workflow.steps):
+                if cancel_event and cancel_event.is_set():
+                    yield AgentEvent(type="cancelled", data={"message": "已取消"})
+                    return
+
                 ctx.current_step_index = i
                 ctx.iteration = 0
                 ctx.history = []
@@ -54,8 +63,10 @@ class ReActAgent:
                     data={"step_index": i, "step": step.model_dump()},
                 )
 
-                async for event in self._execute_step(ctx, step):
+                async for event in self._execute_step(ctx, step, cancel_event):
                     yield event
+                    if event.type == "cancelled":
+                        return
 
                 yield AgentEvent(type="step_complete", data={"step_index": i})
 
@@ -64,16 +75,22 @@ class ReActAgent:
             )
         else:
             # 直接执行任务
-            async for event in self._execute_direct(ctx):
+            async for event in self._execute_direct(ctx, cancel_event):
                 yield event
+                if event.type == "cancelled":
+                    return
 
     async def _execute_step(
-        self, ctx: AgentContext, step: WorkflowStep
+        self, ctx: AgentContext, step: WorkflowStep, cancel_event: Optional[asyncio.Event]
     ) -> AsyncIterator[AgentEvent]:
         """执行单个workflow步骤"""
         step_task = f"{ctx.task}\n\n当前步骤: {step.description}"
 
         while ctx.iteration < MAX_ITERATIONS:
+            if cancel_event and cancel_event.is_set():
+                yield AgentEvent(type="cancelled", data={"message": "已取消"})
+                return
+
             ctx.iteration += 1
 
             # 构建prompt
@@ -109,8 +126,11 @@ class ReActAgent:
                 )
 
                 # 执行工具
-                observation = await self._execute_tool(result)
+                observation = await self._execute_tool(result, cancel_event)
                 yield AgentEvent(type="observation", data={"content": observation})
+                if cancel_event and cancel_event.is_set():
+                    yield AgentEvent(type="cancelled", data={"message": "已取消"})
+                    return
 
                 ctx.history.append(
                     {"type": "action", "tool": result.tool, "input": result.input}
@@ -127,9 +147,15 @@ class ReActAgent:
                 data={"message": f"步骤 {step.id} 达到最大迭代次数"},
             )
 
-    async def _execute_direct(self, ctx: AgentContext) -> AsyncIterator[AgentEvent]:
+    async def _execute_direct(
+        self, ctx: AgentContext, cancel_event: Optional[asyncio.Event]
+    ) -> AsyncIterator[AgentEvent]:
         """直接执行任务（无workflow）"""
         while ctx.iteration < MAX_ITERATIONS:
+            if cancel_event and cancel_event.is_set():
+                yield AgentEvent(type="cancelled", data={"message": "已取消"})
+                return
+
             ctx.iteration += 1
 
             prompt = self._build_direct_prompt(ctx)
@@ -158,8 +184,11 @@ class ReActAgent:
                     data={"tool": result.tool, "input": result.input},
                 )
 
-                observation = await self._execute_tool(result)
+                observation = await self._execute_tool(result, cancel_event)
                 yield AgentEvent(type="observation", data={"content": observation})
+                if cancel_event and cancel_event.is_set():
+                    yield AgentEvent(type="cancelled", data={"message": "已取消"})
+                    return
 
                 ctx.history.append(
                     {"type": "action", "tool": result.tool, "input": result.input}
@@ -172,7 +201,9 @@ class ReActAgent:
                 data={"answer": "达到最大迭代次数，任务可能未完全完成。"},
             )
 
-    async def _execute_tool(self, action: Action) -> str:
+    async def _execute_tool(
+        self, action: Action, cancel_event: Optional[asyncio.Event]
+    ) -> str:
         """执行工具并返回观察结果"""
         if action.input.get("__parse_error"):
             raw = action.input.get("__raw_input", "")
@@ -181,13 +212,16 @@ class ReActAgent:
                 f" 原始输入: {raw}"
             )
 
+        if cancel_event and cancel_event.is_set():
+            return "已取消"
+
         tool = self.tools.get_tool(action.tool)
 
         if not tool:
             return f"错误: 工具 '{action.tool}' 不存在。可用工具: {[t.name for t in self.tools.get_all_tools()]}"
 
         try:
-            result = await tool.execute(**action.input)
+            result = await tool.execute(**action.input, cancel_event=cancel_event)
             if result.success:
                 return str(result.data) if result.data else "执行成功"
             else:

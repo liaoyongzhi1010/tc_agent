@@ -1,6 +1,7 @@
 """文件操作工具"""
+import asyncio
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from app.tools.base import BaseTool
 from app.schemas.models import ToolResult
@@ -15,8 +16,16 @@ class FileReadTool(BaseTool):
     name = "file_read"
     description = "读取指定路径的文件内容"
 
-    async def execute(self, path: str, encoding: str = "utf-8") -> ToolResult:
+    async def execute(
+        self,
+        path: str,
+        encoding: str = "utf-8",
+        cancel_event: Optional[asyncio.Event] = None,
+    ) -> ToolResult:
         try:
+            if cancel_event and cancel_event.is_set():
+                return ToolResult(success=False, error="已取消")
+
             file_path = Path(path)
             if not file_path.exists():
                 return ToolResult(success=False, error=f"文件不存在: {path}")
@@ -49,9 +58,17 @@ class FileWriteTool(BaseTool):
     description = "将内容写入指定路径的文件"
 
     async def execute(
-        self, path: str, content: str, encoding: str = "utf-8", create_dirs: bool = True
+        self,
+        path: str,
+        content: str,
+        encoding: str = "utf-8",
+        create_dirs: bool = True,
+        cancel_event: Optional[asyncio.Event] = None,
     ) -> ToolResult:
         try:
+            if cancel_event and cancel_event.is_set():
+                return ToolResult(success=False, error="已取消")
+
             file_path = Path(path)
 
             if create_dirs:

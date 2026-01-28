@@ -1,5 +1,6 @@
 """加密操作代码生成器"""
-from typing import Dict, Any
+import asyncio
+from typing import Dict, Any, Optional
 
 from app.tools.base import BaseTool
 from app.schemas.models import ToolResult
@@ -153,7 +154,12 @@ cleanup:
 }''',
     }
 
-    async def execute(self, operation: str) -> ToolResult:
+    async def execute(
+        self, operation: str, cancel_event: Optional[asyncio.Event] = None
+    ) -> ToolResult:
+        if cancel_event and cancel_event.is_set():
+            return ToolResult(success=False, error="已取消")
+
         if operation not in self.TEMPLATES:
             available = list(self.TEMPLATES.keys())
             return ToolResult(

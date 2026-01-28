@@ -1,6 +1,8 @@
 """QEMU OP-TEE 运行工具 - 在 QEMU 中测试 TA"""
 import asyncio
+import os
 import shlex
+import signal
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -27,6 +29,7 @@ class QemuRunTool(BaseTool):
         interactive: bool = False,
         secure_mode: bool = False,  # True: ATF+TrustZone (Linux), False: 简化模式 (Mac)
         ca_file: str = None,
+        cancel_event: Optional[asyncio.Event] = None,
     ) -> ToolResult:
         """
         在 QEMU 中运行 TA 测试
@@ -39,6 +42,9 @@ class QemuRunTool(BaseTool):
             secure_mode: 安全模式，True 使用 ATF+TrustZone（Linux），False 使用简化模式（Mac）
         """
         try:
+            if cancel_event and cancel_event.is_set():
+                return ToolResult(success=False, error="已取消")
+
             ta_path = Path(ta_dir).resolve()
             if not ta_path.exists():
                 return ToolResult(success=False, error=f"TA 目录不存在: {ta_dir}")
@@ -55,7 +61,10 @@ class QemuRunTool(BaseTool):
                     return ToolResult(success=False, error=f"CA 文件不存在: {ca_file}")
 
             # 检查 Docker 镜像
-            check_result = await self._run_command(f"docker images -q {OPTEE_IMAGE_NAME}")
+            check_result = await self._run_command(
+                f"docker images -q {OPTEE_IMAGE_NAME}",
+                cancel_event=cancel_event,
+            )
             if not check_result["stdout"].strip():
                 return ToolResult(
                     success=False,
@@ -100,7 +109,9 @@ class QemuRunTool(BaseTool):
 
                 mode_desc = "ATF+TrustZone" if secure_mode else "简化模式"
                 logger.info(f"运行 QEMU 测试 ({mode_desc})", ta_dir=str(ta_path), command=test_command)
-                result = await self._run_command(cmd, timeout=timeout + 30)
+                result = await self._run_command(
+                    cmd, timeout=timeout + 30, cancel_event=cancel_event
+                )
 
                 if result["returncode"] != 0 and "TEST_COMPLETE" not in result["stdout"]:
                     return ToolResult(
@@ -143,25 +154,77 @@ class QemuRunTool(BaseTool):
             f"{test_script} /workspace/ta {ca_arg} {shlex.quote(test_command)} {timeout}"
         )
 
-    async def _run_command(self, cmd: str, timeout: int = 120) -> Dict[str, Any]:
+    async def _run_command(
+        self,
+        cmd: str,
+        timeout: int = 120,
+        cancel_event: Optional[asyncio.Event] = None,
+    ) -> Dict[str, Any]:
         """运行 shell 命令"""
         try:
+            if cancel_event and cancel_event.is_set():
+                return {"returncode": -2, "stdout": "", "stderr": "已取消"}
+
             process = await asyncio.create_subprocess_shell(
                 cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=timeout
+
+            def terminate(proc: asyncio.subprocess.Process) -> None:
+                if proc.returncode is not None:
+                    return
+                try:
+                    if hasattr(os, "killpg"):
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    else:
+                        proc.kill()
+                except ProcessLookupError:
+                    pass
+
+            communicate_task = asyncio.create_task(process.communicate())
+            cancel_task = None
+            tasks = [communicate_task]
+            if cancel_event:
+                cancel_task = asyncio.create_task(cancel_event.wait())
+                tasks.append(cancel_task)
+
+            done, _ = await asyncio.wait(
+                tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
             )
+            status = "timeout"
+            if cancel_task and cancel_task in done:
+                status = "cancelled"
+                terminate(process)
+            elif communicate_task in done:
+                status = "done"
+            else:
+                terminate(process)
+
+            try:
+                stdout, stderr = await communicate_task
+            finally:
+                if cancel_task and cancel_task not in done:
+                    cancel_task.cancel()
+
+            if status == "cancelled":
+                return {
+                    "returncode": -2,
+                    "stdout": stdout.decode("utf-8", errors="replace"),
+                    "stderr": "已取消",
+                }
+            if status == "done":
+                return {
+                    "returncode": process.returncode,
+                    "stdout": stdout.decode("utf-8", errors="replace"),
+                    "stderr": stderr.decode("utf-8", errors="replace"),
+                }
             return {
-                "returncode": process.returncode,
+                "returncode": -1,
                 "stdout": stdout.decode("utf-8", errors="replace"),
-                "stderr": stderr.decode("utf-8", errors="replace"),
+                "stderr": f"超时({timeout}秒)",
             }
-        except asyncio.TimeoutError:
-            process.kill()
-            return {"returncode": -1, "stdout": "", "stderr": f"超时({timeout}秒)"}
         except Exception as e:
             return {"returncode": -1, "stdout": "", "stderr": str(e)}
 

@@ -1,7 +1,8 @@
 """TA代码生成器"""
+import asyncio
 import uuid
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from app.tools.base import BaseTool
 from app.schemas.models import ToolResult
@@ -394,8 +395,12 @@ include $(TA_DEV_KIT_DIR)/mk/ta_dev_kit.mk
         ta_uuid: str = None,
         template: str = None,
         overwrite: bool = True,
+        cancel_event: Optional[asyncio.Event] = None,
     ) -> ToolResult:
         try:
+            if cancel_event and cancel_event.is_set():
+                return ToolResult(success=False, error="已取消")
+
             ta_uuid = ta_uuid or str(uuid.uuid4())
             output_path = Path(output_dir) / f"{name}_ta"
             if output_path.exists() and not overwrite:

@@ -1,6 +1,7 @@
 """CA代码生成器"""
+import asyncio
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from app.tools.base import BaseTool
 from app.schemas.models import ToolResult
@@ -302,8 +303,12 @@ clean:
         output_dir: str,
         template: str = None,
         overwrite: bool = True,
+        cancel_event: Optional[asyncio.Event] = None,
     ) -> ToolResult:
         try:
+            if cancel_event and cancel_event.is_set():
+                return ToolResult(success=False, error="已取消")
+
             output_path = Path(output_dir) / f"{name}_ca"
             if output_path.exists() and not overwrite:
                 return ToolResult(success=False, error=f"输出目录已存在: {output_path}")

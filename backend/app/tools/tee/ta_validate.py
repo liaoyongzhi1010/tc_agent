@@ -1,7 +1,9 @@
 """OP-TEE TA 验证工具"""
 import asyncio
+import os
+import signal
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from app.tools.base import BaseTool
 from app.schemas.models import ToolResult
@@ -19,7 +21,9 @@ class TAValidateTool(BaseTool):
     name = "ta_validate"
     description = "验证编译好的 TA 文件格式、签名和结构是否正确"
 
-    async def execute(self, ta_path: str) -> ToolResult:
+    async def execute(
+        self, ta_path: str, cancel_event: Optional[asyncio.Event] = None
+    ) -> ToolResult:
         """
         验证 TA 文件
 
@@ -27,6 +31,9 @@ class TAValidateTool(BaseTool):
             ta_path: TA 文件路径 (.ta 文件)
         """
         try:
+            if cancel_event and cancel_event.is_set():
+                return ToolResult(success=False, error="已取消")
+
             ta_file = Path(ta_path).resolve()
             if not ta_file.exists():
                 return ToolResult(success=False, error=f"TA 文件不存在: {ta_path}")
@@ -100,7 +107,7 @@ echo "========================================"
                 f"bash -c '{validate_script}'"
             )
 
-            result = await self._run_command(cmd, timeout=60)
+            result = await self._run_command(cmd, timeout=60, cancel_event=cancel_event)
 
             if result["returncode"] != 0:
                 return ToolResult(
@@ -121,25 +128,77 @@ echo "========================================"
             logger.error("TA 验证失败", error=str(e))
             return ToolResult(success=False, error=str(e))
 
-    async def _run_command(self, cmd: str, timeout: int = 60) -> Dict[str, Any]:
+    async def _run_command(
+        self,
+        cmd: str,
+        timeout: int = 60,
+        cancel_event: Optional[asyncio.Event] = None,
+    ) -> Dict[str, Any]:
         """运行 shell 命令"""
         try:
+            if cancel_event and cancel_event.is_set():
+                return {"returncode": -2, "stdout": "", "stderr": "已取消"}
+
             process = await asyncio.create_subprocess_shell(
                 cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=timeout
+
+            def terminate(proc: asyncio.subprocess.Process) -> None:
+                if proc.returncode is not None:
+                    return
+                try:
+                    if hasattr(os, "killpg"):
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    else:
+                        proc.kill()
+                except ProcessLookupError:
+                    pass
+
+            communicate_task = asyncio.create_task(process.communicate())
+            cancel_task = None
+            tasks = [communicate_task]
+            if cancel_event:
+                cancel_task = asyncio.create_task(cancel_event.wait())
+                tasks.append(cancel_task)
+
+            done, _ = await asyncio.wait(
+                tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
             )
+            status = "timeout"
+            if cancel_task and cancel_task in done:
+                status = "cancelled"
+                terminate(process)
+            elif communicate_task in done:
+                status = "done"
+            else:
+                terminate(process)
+
+            try:
+                stdout, stderr = await communicate_task
+            finally:
+                if cancel_task and cancel_task not in done:
+                    cancel_task.cancel()
+
+            if status == "cancelled":
+                return {
+                    "returncode": -2,
+                    "stdout": stdout.decode("utf-8", errors="replace"),
+                    "stderr": "已取消",
+                }
+            if status == "done":
+                return {
+                    "returncode": process.returncode,
+                    "stdout": stdout.decode("utf-8", errors="replace"),
+                    "stderr": stderr.decode("utf-8", errors="replace"),
+                }
             return {
-                "returncode": process.returncode,
+                "returncode": -1,
                 "stdout": stdout.decode("utf-8", errors="replace"),
-                "stderr": stderr.decode("utf-8", errors="replace"),
+                "stderr": f"超时({timeout}秒)",
             }
-        except asyncio.TimeoutError:
-            process.kill()
-            return {"returncode": -1, "stdout": "", "stderr": f"超时({timeout}秒)"}
         except Exception as e:
             return {"returncode": -1, "stdout": "", "stderr": str(e)}
 

@@ -1,4 +1,5 @@
 """Workflow runner helpers for TA/CA build + QEMU test."""
+import asyncio
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -53,7 +54,11 @@ class WorkflowRunner(BaseTool):
         ta_dir: str,
         ca_dir: Optional[str] = None,
         timeout: int = 120,
+        cancel_event: Optional[asyncio.Event] = None,
     ) -> ToolResult:
+        if cancel_event and cancel_event.is_set():
+            return ToolResult(success=False, error="已取消", data={"stage": "cancelled"})
+
         secure_mode = settings.qemu_mode == "secure"
         require_ca = secure_mode
 
@@ -67,7 +72,9 @@ class WorkflowRunner(BaseTool):
         docker_build = DockerBuildTool()
         qemu_run = QemuRunTool()
 
-        ta_build = await docker_build.execute(source_dir=ta_dir, build_type="ta")
+        ta_build = await docker_build.execute(
+            source_dir=ta_dir, build_type="ta", cancel_event=cancel_event
+        )
         if not ta_build.success:
             return ToolResult(
                 success=False,
@@ -78,7 +85,10 @@ class WorkflowRunner(BaseTool):
         ca_exe_path: Optional[Path] = None
         if ca_dir:
             ca_build = await docker_build.execute(
-                source_dir=ca_dir, build_type="ca", ta_dir=ta_dir
+                source_dir=ca_dir,
+                build_type="ca",
+                ta_dir=ta_dir,
+                cancel_event=cancel_event,
             )
             if not ca_build.success:
                 return ToolResult(
@@ -110,6 +120,7 @@ class WorkflowRunner(BaseTool):
             timeout=timeout,
             secure_mode=secure_mode,
             ca_file=ca_file,
+            cancel_event=cancel_event,
         )
 
         if not qemu_result.success:

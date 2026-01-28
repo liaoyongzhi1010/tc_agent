@@ -2,6 +2,7 @@
 import asyncio
 import os
 import shlex
+import signal
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -29,6 +30,7 @@ class DockerBuildTool(BaseTool):
         build_type: str = "ta",
         output_dir: str = None,
         ta_dir: str = None,
+        cancel_event: Optional[asyncio.Event] = None,
     ) -> ToolResult:
         """
         执行Docker编译
@@ -39,6 +41,9 @@ class DockerBuildTool(BaseTool):
             output_dir: 输出目录（可选，默认为source_dir）
         """
         try:
+            if cancel_event and cancel_event.is_set():
+                return ToolResult(success=False, error="已取消")
+
             source_path = Path(source_dir).resolve()
             if not source_path.exists():
                 return ToolResult(success=False, error=f"源代码目录不存在: {source_dir}")
@@ -49,25 +54,25 @@ class DockerBuildTool(BaseTool):
             output_path = Path(output_dir).resolve() if output_dir else source_path
 
             # 检查Docker是否可用
-            check_result = await self._run_command("docker --version")
+            check_result = await self._run_command("docker --version", cancel_event=cancel_event)
             if check_result["returncode"] != 0:
                 return ToolResult(success=False, error="Docker不可用，请确保Docker已安装并运行")
 
             # 检查镜像是否存在，不存在则构建
-            image_exists = await self._check_image_exists()
+            image_exists = await self._check_image_exists(cancel_event=cancel_event)
             if not image_exists:
                 logger.info("Docker镜像不存在，开始构建...")
-                build_result = await self._build_image()
+                build_result = await self._build_image(cancel_event=cancel_event)
                 if not build_result["success"]:
                     return ToolResult(success=False, error=f"构建Docker镜像失败: {build_result['error']}")
                 logger.info("Docker镜像构建完成")
 
             # 执行编译
             if build_type == "ta":
-                result = await self._build_ta(source_path, output_path)
+                result = await self._build_ta(source_path, output_path, cancel_event=cancel_event)
             else:
                 ta_path = Path(ta_dir).resolve() if ta_dir else None
-                result = await self._build_ca(source_path, output_path, ta_path)
+                result = await self._build_ca(source_path, output_path, ta_path, cancel_event=cancel_event)
 
             return result
 
@@ -75,12 +80,14 @@ class DockerBuildTool(BaseTool):
             logger.error("Docker编译失败", error=str(e))
             return ToolResult(success=False, error=str(e))
 
-    async def _check_image_exists(self) -> bool:
+    async def _check_image_exists(self, cancel_event: Optional[asyncio.Event] = None) -> bool:
         """检查Docker镜像是否存在"""
-        result = await self._run_command(f"docker images -q {OPTEE_IMAGE_NAME}")
+        result = await self._run_command(
+            f"docker images -q {OPTEE_IMAGE_NAME}", cancel_event=cancel_event
+        )
         return bool(result["stdout"].strip())
 
-    async def _build_image(self) -> Dict[str, Any]:
+    async def _build_image(self, cancel_event: Optional[asyncio.Event] = None) -> Dict[str, Any]:
         """构建Docker镜像"""
         # 获取Dockerfile所在目录
         backend_dir = Path(__file__).parent.parent.parent.parent
@@ -96,14 +103,19 @@ class DockerBuildTool(BaseTool):
         )
 
         logger.info("开始构建Docker镜像", cmd=cmd)
-        result = await self._run_command(cmd, timeout=1800)  # 30分钟超时
+        result = await self._run_command(cmd, timeout=1800, cancel_event=cancel_event)  # 30分钟超时
 
         if result["returncode"] != 0:
             return {"success": False, "error": result["stderr"] or result["stdout"]}
 
         return {"success": True}
 
-    async def _build_ta(self, source_path: Path, output_path: Path) -> ToolResult:
+    async def _build_ta(
+        self,
+        source_path: Path,
+        output_path: Path,
+        cancel_event: Optional[asyncio.Event] = None,
+    ) -> ToolResult:
         """编译TA"""
         # Docker运行命令
         cmd = (
@@ -118,7 +130,7 @@ class DockerBuildTool(BaseTool):
         )
 
         logger.info("编译TA", source=str(source_path))
-        result = await self._run_command(cmd, timeout=300)
+        result = await self._run_command(cmd, timeout=300, cancel_event=cancel_event)
 
         if result["returncode"] != 0:
             return ToolResult(
@@ -177,13 +189,17 @@ class DockerBuildTool(BaseTool):
         )
 
     async def _build_ca(
-        self, source_path: Path, output_path: Path, ta_path: Optional[Path]
+        self,
+        source_path: Path,
+        output_path: Path,
+        ta_path: Optional[Path],
+        cancel_event: Optional[asyncio.Event] = None,
     ) -> ToolResult:
         """编译CA"""
         cmd = self._build_ca_command(source_path, output_path, ta_path)
 
         logger.info("编译CA", source=str(source_path))
-        result = await self._run_command(cmd, timeout=300)
+        result = await self._run_command(cmd, timeout=300, cancel_event=cancel_event)
 
         if result["returncode"] != 0:
             return ToolResult(
@@ -199,27 +215,75 @@ class DockerBuildTool(BaseTool):
             }
         )
 
-    async def _run_command(self, cmd: str, timeout: int = 120) -> Dict[str, Any]:
+    async def _run_command(
+        self,
+        cmd: str,
+        timeout: int = 120,
+        cancel_event: Optional[asyncio.Event] = None,
+    ) -> Dict[str, Any]:
         """运行shell命令"""
         try:
+            if cancel_event and cancel_event.is_set():
+                return {"returncode": -2, "stdout": "", "stderr": "已取消"}
+
             process = await asyncio.create_subprocess_shell(
                 cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=timeout
+
+            def terminate(proc: asyncio.subprocess.Process) -> None:
+                if proc.returncode is not None:
+                    return
+                try:
+                    if hasattr(os, "killpg"):
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    else:
+                        proc.kill()
+                except ProcessLookupError:
+                    pass
+
+            communicate_task = asyncio.create_task(process.communicate())
+            cancel_task = None
+            tasks = [communicate_task]
+            if cancel_event:
+                cancel_task = asyncio.create_task(cancel_event.wait())
+                tasks.append(cancel_task)
+
+            done, _ = await asyncio.wait(
+                tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
             )
-            return {
-                "returncode": process.returncode,
-                "stdout": stdout.decode("utf-8", errors="replace"),
-                "stderr": stderr.decode("utf-8", errors="replace"),
-            }
-        except asyncio.TimeoutError:
-            process.kill()
+            status = "timeout"
+            if cancel_task and cancel_task in done:
+                status = "cancelled"
+                terminate(process)
+            elif communicate_task in done:
+                status = "done"
+            else:
+                terminate(process)
+
+            try:
+                stdout, stderr = await communicate_task
+            finally:
+                if cancel_task and cancel_task not in done:
+                    cancel_task.cancel()
+
+            if status == "cancelled":
+                return {
+                    "returncode": -2,
+                    "stdout": stdout.decode("utf-8", errors="replace"),
+                    "stderr": "已取消",
+                }
+            if status == "done":
+                return {
+                    "returncode": process.returncode,
+                    "stdout": stdout.decode("utf-8", errors="replace"),
+                    "stderr": stderr.decode("utf-8", errors="replace"),
+                }
             return {
                 "returncode": -1,
-                "stdout": "",
+                "stdout": stdout.decode("utf-8", errors="replace"),
                 "stderr": f"命令执行超时({timeout}秒)",
             }
         except Exception as e:

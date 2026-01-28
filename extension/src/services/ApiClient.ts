@@ -136,11 +136,16 @@ export class ApiClient {
         return new WebSocket(`${wsUrl}/code/execute/${workflowId}`);
     }
 
-    async *executeDirectStream(task: string, workspaceRoot?: string): AsyncGenerator<{ type: string; data: any }> {
+    async *executeDirectStream(
+        task: string,
+        workspaceRoot?: string,
+        signal?: AbortSignal
+    ): AsyncGenerator<{ type: string; data: any }> {
         const response = await fetch(`${this.getBaseUrl()}/code/execute-direct`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ task, workspace_root: workspaceRoot })
+            body: JSON.stringify({ task, workspace_root: workspaceRoot }),
+            signal
         });
 
         if (!response.ok) {
@@ -183,6 +188,15 @@ export class ApiClient {
         }
         const data = await response.json() as { tools: Array<{ name: string; description: string; schema: any }> };
         return data.tools;
+    }
+
+    async cancelRun(runId: string): Promise<void> {
+        const response = await fetch(`${this.getBaseUrl()}/code/cancel/${runId}`, {
+            method: 'POST'
+        });
+        if (!response.ok) {
+            throw new Error(`Cancel failed: ${response.statusText}`);
+        }
     }
 
     async healthCheck(): Promise<boolean> {

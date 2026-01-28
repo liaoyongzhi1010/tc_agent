@@ -14,6 +14,9 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
     private currentMode: 'ask' | 'plan' | 'code' = 'ask';
     private currentWorkflowId: string | null = null;
     private codeWebSocket: WebSocket | null = null;
+    private directAbort: AbortController | null = null;
+    private currentRunId: string | null = null;
+    private cancelRequested = false;
 
     constructor(
         private context: vscode.ExtensionContext,
@@ -58,6 +61,9 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'directExecute':
                     await this.handleDirectExecute(message.task);
+                    break;
+                case 'cancelCode':
+                    await this.handleCancelCode();
                     break;
                 case 'switchMode':
                     this.currentMode = message.mode;
@@ -187,6 +193,8 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
         }
 
         try {
+            this.cancelRequested = false;
+            this.currentRunId = null;
             this.view?.webview.postMessage({ command: 'codeStart' });
 
             const ws = this.apiClient.createCodeWebSocket(workflowId);
@@ -209,6 +217,7 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
             };
 
             ws.onclose = () => {
+                this.codeWebSocket = null;
                 this.view?.webview.postMessage({ command: 'codeComplete' });
             };
 
@@ -222,23 +231,53 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
 
     private async handleDirectExecute(task: string): Promise<void> {
         try {
+            this.cancelRequested = false;
+            this.currentRunId = null;
+            if (this.directAbort) {
+                this.directAbort.abort();
+            }
+            this.directAbort = new AbortController();
             this.view?.webview.postMessage({ command: 'codeStart' });
 
-            for await (const event of this.apiClient.executeDirectStream(task, this.getWorkspaceRoot())) {
+            for await (const event of this.apiClient.executeDirectStream(
+                task,
+                this.getWorkspaceRoot(),
+                this.directAbort.signal
+            )) {
                 this.handleAgentEvent(event);
             }
 
             this.view?.webview.postMessage({ command: 'codeComplete' });
         } catch (error) {
-            this.view?.webview.postMessage({
-                command: 'error',
-                message: `执行失败: ${error}`
-            });
+            if (this.cancelRequested) {
+                this.view?.webview.postMessage({
+                    command: 'codeCancelled',
+                    message: '已取消'
+                });
+            } else {
+                this.view?.webview.postMessage({
+                    command: 'error',
+                    message: `执行失败: ${error}`
+                });
+            }
+        } finally {
+            this.directAbort = null;
         }
     }
 
     private handleAgentEvent(event: { type: string; data?: any }): void {
         switch (event.type) {
+            case 'run_id':
+                this.currentRunId = event.data?.run_id || null;
+                break;
+
+            case 'cancelled':
+                this.view?.webview.postMessage({
+                    command: 'codeCancelled',
+                    message: event.data?.message || '已取消'
+                });
+                break;
+
             case 'step_start':
                 this.view?.webview.postMessage({
                     command: 'stepStart',
@@ -293,6 +332,28 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
                     message: event.data?.message || String(event.data)
                 });
                 break;
+        }
+    }
+
+    private async handleCancelCode(): Promise<void> {
+        this.cancelRequested = true;
+        this.view?.webview.postMessage({ command: 'codeCancelRequested' });
+
+        if (this.codeWebSocket && this.codeWebSocket.readyState === WebSocket.OPEN) {
+            this.codeWebSocket.send(JSON.stringify({ type: 'cancel' }));
+            return;
+        }
+
+        if (this.directAbort) {
+            this.directAbort.abort();
+        }
+
+        if (this.currentRunId) {
+            try {
+                await this.apiClient.cancelRun(this.currentRunId);
+            } catch (error) {
+                console.error('Cancel failed:', error);
+            }
         }
     }
 
@@ -923,10 +984,105 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
             opacity: 1;
         }
 
+        .code-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+
         .code-status {
             font-size: 12px;
             opacity: 0.7;
+        }
+
+        .code-stop {
+            padding: 4px 10px;
+            border: 1px solid var(--vscode-button-border, transparent);
+            background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+            color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .code-stop[disabled] {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .code-milestones {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 10px;
+        }
+
+        .code-steps {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .code-step {
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 6px;
+            padding: 8px;
+        }
+
+        .code-step-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+            margin-bottom: 6px;
+        }
+
+        .code-step-status {
+            opacity: 0.7;
+        }
+
+        .code-step-milestones {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
             margin-bottom: 8px;
+        }
+
+        .milestone {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+        }
+
+        .milestone.pending::before {
+            content: '⏳';
+        }
+
+        .milestone.success::before {
+            content: '✅';
+        }
+
+        .milestone.fail::before {
+            content: '❌';
+        }
+
+        .code-details summary {
+            cursor: pointer;
+            font-size: 12px;
+            opacity: 0.7;
+            margin-bottom: 6px;
+        }
+
+        .code-run.has-steps .code-details {
+            display: none;
+        }
+
+        .code-run.has-steps .code-milestones {
+            display: none;
         }
 
         .toolbar-spacer {
@@ -1015,6 +1171,12 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
         let codeRunActive = false;
         let codeRunHasFinal = false;
         let currentCodeStatus = '';
+        let cancelRequested = false;
+        let lastActionMilestone = null;
+        let activeStepIndex = null;
+        let stepEventContainers = {};
+        let stepMilestoneContainers = {};
+        let stepStatusLabels = {};
 
         // 简单的语法高亮
         function highlightCode(code, lang) {
@@ -1267,47 +1429,167 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
             return totalSeconds + 's';
         }
 
-        function ensureCodeStatusElement(msg) {
-            let statusEl = msg.querySelector('.code-status');
-            if (statusEl) return statusEl;
-
+        function initCodeRunView(msg) {
             const content = msg.querySelector('.message-content');
-            if (!content) return null;
+            if (!content) return;
 
-            statusEl = document.createElement('div');
-            statusEl.className = 'code-status';
-            statusEl.textContent = currentCodeStatus || '执行中';
+            content.innerHTML =
+                '<div class="code-run">' +
+                    '<div class="code-header">' +
+                        '<div class="code-status">执行中</div>' +
+                        '<button class="code-stop">停止执行</button>' +
+                    '</div>' +
+                    '<div class="code-milestones"></div>' +
+                    '<div class="code-steps"></div>' +
+                    '<details class="code-details">' +
+                        '<summary>执行详情</summary>' +
+                        '<div class="agent-events"></div>' +
+                    '</details>' +
+                '</div>';
 
-            const agentEvents = content.querySelector('.agent-events');
-            if (agentEvents) {
-                content.insertBefore(statusEl, agentEvents);
-            } else {
-                content.prepend(statusEl);
-            }
-            return statusEl;
+            const stopBtn = content.querySelector('.code-stop');
+            stopBtn.onclick = () => requestCancel();
         }
 
         function updateCodeStatus(statusText) {
             currentCodeStatus = statusText;
             if (!currentAssistantMsg) return;
 
-            const indicator = currentAssistantMsg.querySelector('.working-indicator');
-            if (indicator) {
-                indicator.textContent = statusText;
+            const statusEl = currentAssistantMsg.querySelector('.code-status');
+            if (statusEl) {
+                statusEl.textContent = statusText;
                 return;
             }
 
-            const statusEl = ensureCodeStatusElement(currentAssistantMsg);
-            if (statusEl) {
-                statusEl.textContent = statusText;
+            const indicator = currentAssistantMsg.querySelector('.working-indicator');
+            if (indicator) {
+                indicator.textContent = statusText;
             }
+        }
+
+        function setStopButtonState(disabled, label) {
+            if (!currentAssistantMsg) return;
+            const btn = currentAssistantMsg.querySelector('.code-stop');
+            if (!btn) return;
+            btn.disabled = disabled;
+            if (label) {
+                btn.textContent = label;
+            }
+        }
+
+        function getMilestonesContainer() {
+            if (!currentAssistantMsg) return null;
+            return currentAssistantMsg.querySelector('.code-milestones');
+        }
+
+        function addMilestone(text, status = 'pending', containerOverride = null) {
+            const container = containerOverride || getMilestonesContainer();
+            if (!container) return null;
+            const item = document.createElement('div');
+            item.className = 'milestone ' + status;
+            item.textContent = text;
+            container.appendChild(item);
+            return item;
+        }
+
+        function updateMilestone(item, status, text) {
+            if (!item) return;
+            item.className = 'milestone ' + status;
+            if (text) {
+                item.textContent = text;
+            }
+        }
+
+        function getStepContainer() {
+            if (!currentAssistantMsg) return null;
+            return currentAssistantMsg.querySelector('.code-steps');
+        }
+
+        function ensureStepBlock(stepIndex, step) {
+            const container = getStepContainer();
+            if (!container) return null;
+
+            if (stepEventContainers[stepIndex]) {
+                return stepEventContainers[stepIndex];
+            }
+
+            const stepEl = document.createElement('div');
+            stepEl.className = 'code-step';
+            const title = '步骤 ' + (step?.id || stepIndex) + ': ' + (step?.description || '');
+            stepEl.innerHTML =
+                '<div class="code-step-header">' +
+                    '<div class="code-step-title">' + title + '</div>' +
+                    '<div class="code-step-status">进行中</div>' +
+                '</div>' +
+                '<div class="code-step-milestones"></div>' +
+                '<details class="code-step-details">' +
+                    '<summary>执行详情</summary>' +
+                    '<div class="agent-events"></div>' +
+                '</details>';
+
+            container.appendChild(stepEl);
+
+            const events = stepEl.querySelector('.agent-events');
+            const milestones = stepEl.querySelector('.code-step-milestones');
+            const status = stepEl.querySelector('.code-step-status');
+            stepEventContainers[stepIndex] = events;
+            stepMilestoneContainers[stepIndex] = milestones;
+            stepStatusLabels[stepIndex] = status;
+
+            const run = currentAssistantMsg.querySelector('.code-run');
+            if (run) {
+                run.classList.add('has-steps');
+            }
+
+            return events;
+        }
+
+        function setStepStatus(stepIndex, text) {
+            const label = stepStatusLabels[stepIndex];
+            if (label) {
+                label.textContent = text;
+            }
+        }
+
+        function setAllStepStatuses(text, ignoreCompleted = true) {
+            Object.values(stepStatusLabels).forEach(label => {
+                if (!label) return;
+                if (ignoreCompleted && label.textContent === '完成') return;
+                label.textContent = text;
+            });
+        }
+
+        function getActiveMilestoneContainer() {
+            if (activeStepIndex !== null && stepMilestoneContainers[activeStepIndex]) {
+                return stepMilestoneContainers[activeStepIndex];
+            }
+            if (!currentAssistantMsg) return null;
+            return currentAssistantMsg.querySelector('.code-milestones');
+        }
+
+        function getActiveEventContainer() {
+            if (activeStepIndex !== null && stepEventContainers[activeStepIndex]) {
+                return stepEventContainers[activeStepIndex];
+            }
+            if (!currentAssistantMsg) return null;
+            return currentAssistantMsg.querySelector('.code-details .agent-events') || currentAssistantMsg.querySelector('.agent-events');
         }
 
         function startCodeRun() {
             codeRunActive = true;
+            cancelRequested = false;
             codeRunHasFinal = false;
+            lastActionMilestone = null;
+            activeStepIndex = null;
+            stepEventContainers = {};
+            stepMilestoneContainers = {};
+            stepStatusLabels = {};
+            if (currentAssistantMsg) {
+                initCodeRunView(currentAssistantMsg);
+            }
             codeRunStart = Date.now();
             updateCodeStatus('执行中 · 已运行 0s');
+            setStopButtonState(false, '停止执行');
             if (codeRunTimer) {
                 clearInterval(codeRunTimer);
             }
@@ -1326,6 +1608,48 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
             }
             if (statusText) {
                 updateCodeStatus(statusText);
+            }
+            setStopButtonState(true);
+        }
+
+        function requestCancel() {
+            if (cancelRequested) return;
+            cancelRequested = true;
+            updateCodeStatus('取消中…');
+            setStopButtonState(true, '取消中');
+            vscode.postMessage({ command: 'cancelCode' });
+        }
+
+        function isFailureObservation(content) {
+            if (!content) return false;
+            return /失败|error|异常/i.test(content);
+        }
+
+        function formatActionLabel(tool, input) {
+            if (tool === 'file_write') {
+                return '写入文件 ' + (input?.path || '');
+            }
+            if (tool === 'docker_build') {
+                return '编译 ' + (input?.build_type || '') + ' ' + (input?.source_dir || '');
+            }
+            if (tool === 'qemu_run') {
+                return '运行 QEMU 测试';
+            }
+            if (tool === 'workflow_runner') {
+                return '编译并运行验证';
+            }
+            if (tool === 'terminal') {
+                return '执行命令 ' + (input?.command || '');
+            }
+            return '执行工具 ' + tool;
+        }
+
+        function maybeAddFileMilestone(content, containerOverride = null) {
+            if (!content || typeof content !== 'string') return;
+            if (!content.includes('path')) return;
+            const match = content.match(/path['":\s]+([^'"\s,}]+)/);
+            if (match && match[1]) {
+                addMilestone('生成文件 ' + match[1], 'success', containerOverride);
             }
         }
 
@@ -1388,8 +1712,8 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
         }
 
         // Agent 事件输出
-        function addAgentEvent(msg, type, content) {
-            let eventContainer = msg.querySelector('.agent-events');
+        function addAgentEvent(msg, type, content, containerOverride = null) {
+            let eventContainer = containerOverride || msg.querySelector('.code-details .agent-events') || msg.querySelector('.agent-events');
             if (!eventContainer) {
                 msg.querySelector('.message-content').innerHTML = '<div class="agent-events"></div>';
                 eventContainer = msg.querySelector('.agent-events');
@@ -1420,11 +1744,23 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
 
         // 显示最终结果
         function showFinalResult(msg, answer) {
-            let eventContainer = msg.querySelector('.agent-events');
-            if (eventContainer) {
-                eventContainer.innerHTML += '<div class="markdown-content" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--vscode-panel-border);">' + renderMarkdown(answer) + '</div>';
+            const codeRun = msg.querySelector('.code-run');
+            if (codeRun) {
+                let result = codeRun.querySelector('.code-result');
+                if (!result) {
+                    result = document.createElement('div');
+                    result.className = 'code-result';
+                    const details = codeRun.querySelector('.code-details');
+                    codeRun.insertBefore(result, details);
+                }
+                result.innerHTML = '<div class="markdown-content">' + renderMarkdown(answer) + '</div>';
             } else {
-                msg.querySelector('.message-content').innerHTML = '<div class="markdown-content">' + renderMarkdown(answer) + '</div>';
+                let eventContainer = msg.querySelector('.agent-events');
+                if (eventContainer) {
+                    eventContainer.innerHTML += '<div class="markdown-content" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--vscode-panel-border);">' + renderMarkdown(answer) + '</div>';
+                } else {
+                    msg.querySelector('.message-content').innerHTML = '<div class="markdown-content">' + renderMarkdown(answer) + '</div>';
+                }
             }
             scrollToBottom();
         }
@@ -1563,21 +1899,47 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
                     startCodeRun();
                     break;
 
+                case 'stepStart':
+                    if (currentAssistantMsg) {
+                        const stepIndex = message.stepIndex;
+                        activeStepIndex = stepIndex;
+                        ensureStepBlock(stepIndex, message.step);
+                        setStepStatus(stepIndex, '进行中');
+                    }
+                    break;
+
+                case 'stepComplete':
+                    if (currentAssistantMsg) {
+                        const stepIndex = message.stepIndex;
+                        setStepStatus(stepIndex, '完成');
+                    }
+                    break;
+
                 case 'thought':
                     if (currentAssistantMsg) {
-                        addAgentEvent(currentAssistantMsg, 'thought', message.content);
+                        const container = getActiveEventContainer();
+                        addAgentEvent(currentAssistantMsg, 'thought', message.content, container);
                     }
                     break;
 
                 case 'action':
                     if (currentAssistantMsg) {
-                        addAgentEvent(currentAssistantMsg, 'action', message.tool + ': ' + JSON.stringify(message.input));
+                        const label = formatActionLabel(message.tool, message.input);
+                        const milestoneContainer = getActiveMilestoneContainer();
+                        lastActionMilestone = addMilestone(label, 'pending', milestoneContainer);
+                        const container = getActiveEventContainer();
+                        addAgentEvent(currentAssistantMsg, 'action', message.tool + ': ' + JSON.stringify(message.input), container);
                     }
                     break;
 
                 case 'observation':
                     if (currentAssistantMsg) {
-                        addAgentEvent(currentAssistantMsg, 'observation', message.content);
+                        const status = isFailureObservation(message.content) ? 'fail' : 'success';
+                        updateMilestone(lastActionMilestone, status);
+                        const container = getActiveEventContainer();
+                        addAgentEvent(currentAssistantMsg, 'observation', message.content, container);
+                        const milestoneContainer = getActiveMilestoneContainer();
+                        maybeAddFileMilestone(message.content, milestoneContainer);
                     }
                     break;
 
@@ -1591,11 +1953,31 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
                     break;
 
                 case 'codeComplete':
-                    if (!codeRunHasFinal) {
+                    if (!codeRunHasFinal && cancelRequested) {
+                        finishCodeRun('🛑 已取消');
+                        setStopButtonState(true, '已取消');
+                        setAllStepStatuses('已取消', true);
+                    } else if (!codeRunHasFinal) {
                         finishCodeRun('✅ 执行结束（无最终输出）');
                     } else {
                         finishCodeRun('✅ 执行完成');
                     }
+                    currentSources = null;
+                    break;
+
+                case 'codeCancelRequested':
+                    cancelRequested = true;
+                    updateCodeStatus('取消中…');
+                    setStopButtonState(true, '取消中');
+                    setAllStepStatuses('取消中', true);
+                    break;
+
+                case 'codeCancelled':
+                    cancelRequested = true;
+                    finishCodeRun('🛑 已取消');
+                    setStopButtonState(true, '已取消');
+                    addMilestone('任务已取消', 'success', getActiveMilestoneContainer());
+                    setAllStepStatuses('已取消', true);
                     currentSources = null;
                     break;
 
@@ -1604,7 +1986,7 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
                         currentAssistantMsg.querySelector('.message-content').innerHTML = '<div class="error">❌ ' + message.message + '</div>';
                     }
                     codeRunHasFinal = true;
-                    finishCodeRun();
+                    finishCodeRun('❌ 执行失败');
                     currentSources = null;
                     break;
             }
