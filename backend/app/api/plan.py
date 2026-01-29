@@ -86,12 +86,3 @@ async def confirm_plan(body: PlanConfirmRequest):
         "message": "计划已确认,可以进入Code模式执行",
     }
 
-
-@router.get("/{workflow_id}")
-async def get_plan(workflow_id: str):
-    """获取计划详情"""
-    if workflow_id not in workflows:
-        raise HTTPException(status_code=404, detail="Workflow not found")
-
-    workflow = workflows[workflow_id]
-    return workflow.model_dump()

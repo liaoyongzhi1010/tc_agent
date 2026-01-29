@@ -1,6 +1,5 @@
 """TC Agent 数据模型"""
 from app.schemas.models import (
-    Mode,
     WorkflowStep,
     Workflow,
     RetrievedDoc,
@@ -8,17 +7,14 @@ from app.schemas.models import (
     AgentEvent,
     LLMConfig,
     AskRequest,
-    AskResponse,
     PlanInitRequest,
     PlanRefineRequest,
     PlanConfirmRequest,
-    CodeExecuteRequest,
     AddDocumentRequest,
     AddDirectoryRequest,
 )
 
 __all__ = [
-    "Mode",
     "WorkflowStep",
     "Workflow",
     "RetrievedDoc",
@@ -26,11 +22,9 @@ __all__ = [
     "AgentEvent",
     "LLMConfig",
     "AskRequest",
-    "AskResponse",
     "PlanInitRequest",
     "PlanRefineRequest",
     "PlanConfirmRequest",
-    "CodeExecuteRequest",
     "AddDocumentRequest",
     "AddDirectoryRequest",
 ]

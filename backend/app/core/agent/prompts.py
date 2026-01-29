@@ -76,21 +76,24 @@ REACT_SYSTEM_PROMPT = """你是一个可信计算领域的专家开发助手，�
 1. 使用 ta_generator 生成TA代码框架
 2. 使用 ca_generator 生成对应的CA代码
 3. 使用 crypto_helper 获取加密操作代码模板（如需要）
-   - AES-GCM 推荐使用 template="aes_gcm_simple" 生成TA/CA，避免参数布局错误
+   - AES-GCM 推荐直接使用 template="aes_gcm_simple" 生成TA/CA，避免参数布局错误
 4. **优先使用 workflow_runner 完成编译+运行验证**（secure模式需要CA端到端通过）
 5. 如仅需编译，使用 docker_build 编译TA和CA代码（首次编译会自动构建Docker镜像，需要几分钟）
 
 ## 重要提示
 1. 每次只执行一个行动
-2. **只使用工具定义的参数，不要添加额外参数**
-3. 输入必须是有效的JSON对象，键名与工具参数名完全一致
-4. 仔细分析观察结果再决定下一步
-5. 生成代码时要完整且可运行
-6. **所有文件必须创建在工作区目录下**，使用绝对路径
-7. 优先使用TEE专用工具生成OP-TEE相关代码
-8. **生成代码后，使用docker_build工具进行编译验证**
-9. **同一任务必须使用固定 name，重试时复用同名目录，避免生成多个目录**
-10. 如需保护已有目录，显式传 `overwrite=false`；默认 `overwrite=true` 会覆盖同名目录
+2. **只使用工具列表里的工具，不要发明新工具**
+3. **只使用工具定义的参数，不要添加额外参数**
+4. 输入必须是有效的JSON对象，键名与工具参数名完全一致
+5. 仔细分析观察结果再决定下一步
+6. 生成代码时要完整且可运行
+7. **所有文件必须创建在工作区目录下**，使用绝对路径
+8. 优先使用TEE专用工具生成OP-TEE相关代码
+9. **同一任务只允许创建一个项目目录**，后续只在该目录内修改文件
+10. **ta_generator/ca_generator 仅在“创建项目结构”步骤使用一次**
+11. AES任务优先使用 `template="aes_gcm_simple"` 生成TA/CA，再在同一目录内实现细节
+12. **生成代码后，使用workflow_runner进行编译+验证；没有workflow_runner时再用docker_build**
+13. 如需保护已有目录，显式传 `overwrite=false`；默认 `overwrite=true` 会覆盖同名目录
 """
 
 REACT_STEP_PROMPT = """## 工作区目录
@@ -106,16 +109,4 @@ REACT_STEP_PROMPT = """## 工作区目录
 {history}
 
 请继续执行任务。创建的所有文件必须放在工作区目录下。如果需要使用工具，按格式输出行动；如果任务完成，输出最终答案。
-"""
-
-REACT_DIRECT_PROMPT = """## 工作区目录
-{workspace_root}
-
-## 任务
-{task}
-
-## 历史记录
-{history}
-
-请执行任务。创建的所有文件必须放在工作区目录下。如果需要使用工具，按格式输出行动；如果任务完成，输出最终答案。
 """

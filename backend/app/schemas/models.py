@@ -1,14 +1,6 @@
 """TC Agent 数据模型"""
-from enum import Enum
 from typing import Optional, List, Any
 from pydantic import BaseModel, Field
-
-
-class Mode(str, Enum):
-    """工作模式"""
-    ASK = "ask"
-    PLAN = "plan"
-    CODE = "code"
 
 
 class WorkflowStep(BaseModel):
@@ -64,12 +56,6 @@ class AskRequest(BaseModel):
     model: Optional[str] = None
 
 
-class AskResponse(BaseModel):
-    """Ask响应"""
-    answer: str
-    sources: List[dict]
-
-
 # Plan模式
 class PlanInitRequest(BaseModel):
     """Plan初始化请求"""
@@ -87,14 +73,6 @@ class PlanRefineRequest(BaseModel):
 class PlanConfirmRequest(BaseModel):
     """Plan确认请求"""
     workflow_id: str
-
-
-# Code模式
-class CodeExecuteRequest(BaseModel):
-    """Code执行请求"""
-    task: str
-    workflow_id: Optional[str] = None
-    workspace_root: Optional[str] = None
 
 
 # 知识库

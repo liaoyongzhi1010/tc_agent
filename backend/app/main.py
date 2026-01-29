@@ -54,9 +54,9 @@ app.add_middleware(
 )
 
 # 注册路由
-app.include_router(ask.router, prefix="/ask", tags=["Ask Mode"])
-app.include_router(plan.router, prefix="/plan", tags=["Plan Mode"])
-app.include_router(code.router, prefix="/code", tags=["Code Mode"])
+app.include_router(ask.router, prefix="/ask", tags=["Ask"])
+app.include_router(plan.router, prefix="/plan", tags=["Agent Planning"])
+app.include_router(code.router, prefix="/code", tags=["Agent Execution"])
 app.include_router(knowledge.router, prefix="/knowledge", tags=["Knowledge"])
 
 

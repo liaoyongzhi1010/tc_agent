@@ -31,13 +31,8 @@
         "icon": "$(comment-discussion)"
       },
       {
-        "command": "tcAgent.plan",
-        "title": "TC Agent: Create Plan",
-        "icon": "$(tasklist)"
-      },
-      {
-        "command": "tcAgent.code",
-        "title": "TC Agent: Execute Code",
+        "command": "tcAgent.agent",
+        "title": "TC Agent: Agent Mode",
         "icon": "$(play)"
       },
       {

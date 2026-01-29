@@ -124,12 +124,8 @@ class WorkflowManager:
     def _get_default_steps(self, task: str) -> List[WorkflowStep]:
         """返回默认工作流步骤"""
         default_steps = [
-            WorkflowStep(id="1", description="分析任务需求，确定TA功能边界"),
-            WorkflowStep(id="2", description="设计TA接口和数据结构"),
-            WorkflowStep(id="3", description="生成TA代码框架"),
-            WorkflowStep(id="4", description="实现核心业务逻辑"),
-            WorkflowStep(id="5", description="生成CA客户端代码"),
-            WorkflowStep(id="6", description="编写Makefile和构建配置"),
-            WorkflowStep(id="7", description="测试和验证功能"),
+            WorkflowStep(id="1", description="创建TA/CA项目结构（仅一次）"),
+            WorkflowStep(id="2", description="实现核心加密逻辑并完善接口"),
+            WorkflowStep(id="3", description="编译并进行基础验证"),
         ]
         return default_steps

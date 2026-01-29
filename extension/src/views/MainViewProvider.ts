@@ -5,17 +5,12 @@
 import * as vscode from 'vscode';
 import { BackendManager } from '../services/BackendManager';
 import { ApiClient } from '../services/ApiClient';
-import { WorkspaceEditor } from '../services/WorkspaceEditor';
 
 export class MainViewProvider implements vscode.WebviewViewProvider {
     private view?: vscode.WebviewView;
     private apiClient: ApiClient;
-    private workspaceEditor: WorkspaceEditor;
-    private currentMode: 'ask' | 'plan' | 'code' = 'ask';
-    private currentWorkflowId: string | null = null;
+    private currentMode: 'ask' | 'agent' = 'ask';
     private codeWebSocket: WebSocket | null = null;
-    private directAbort: AbortController | null = null;
-    private currentRunId: string | null = null;
     private cancelRequested = false;
 
     constructor(
@@ -23,7 +18,6 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
         private backendManager: BackendManager
     ) {
         this.apiClient = new ApiClient(backendManager);
-        this.workspaceEditor = new WorkspaceEditor();
     }
 
     private getWorkspaceRoot(): string | undefined {
@@ -56,12 +50,6 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
                 case 'confirmPlan':
                     await this.handleConfirmPlan(message.workflowId);
                     break;
-                case 'executeWorkflow':
-                    await this.handleExecuteWorkflow(message.workflowId);
-                    break;
-                case 'directExecute':
-                    await this.handleDirectExecute(message.task);
-                    break;
                 case 'cancelCode':
                     await this.handleCancelCode();
                     break;
@@ -73,14 +61,11 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
                     await config.update('llm.provider', message.model, true);
                     vscode.window.showInformationMessage(`已切换到 ${message.model} 模型`);
                     break;
-                case 'applyFileEdit':
-                    await this.handleApplyFileEdit(message.path, message.content);
-                    break;
             }
         });
     }
 
-    switchMode(mode: 'ask' | 'plan' | 'code'): void {
+    switchMode(mode: 'ask' | 'agent'): void {
         this.currentMode = mode;
         this.view?.webview.postMessage({ command: 'setMode', mode });
     }
@@ -130,8 +115,13 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
         try {
             this.view?.webview.postMessage({ command: 'loading', loading: true });
 
-            const response = await this.apiClient.initPlan(task, this.getWorkspaceRoot());
-            this.currentWorkflowId = response.workflow_id;
+            const workspaceRoot = this.getWorkspaceRoot();
+            if (!workspaceRoot) {
+                vscode.window.showErrorMessage('请先打开一个工作区文件夹，再使用 Agent 模式');
+                return;
+            }
+
+            const response = await this.apiClient.initPlan(task, workspaceRoot);
             this.view?.webview.postMessage({
                 command: 'planResponse',
                 workflowId: response.workflow_id,
@@ -169,14 +159,12 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
     private async handleConfirmPlan(workflowId: string): Promise<void> {
         try {
             await this.apiClient.confirmPlan(workflowId);
-            this.currentWorkflowId = workflowId;
             this.view?.webview.postMessage({
                 command: 'planConfirmed',
                 workflowId
             });
 
-            // 自动切换到Code模式并开始执行
-            this.switchMode('code');
+            // Agent模式确认后直接执行
             await this.handleExecuteWorkflow(workflowId);
         } catch (error) {
             this.view?.webview.postMessage({
@@ -194,7 +182,6 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
 
         try {
             this.cancelRequested = false;
-            this.currentRunId = null;
             this.view?.webview.postMessage({ command: 'codeStart' });
 
             const ws = this.apiClient.createCodeWebSocket(workflowId);
@@ -229,48 +216,9 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async handleDirectExecute(task: string): Promise<void> {
-        try {
-            this.cancelRequested = false;
-            this.currentRunId = null;
-            if (this.directAbort) {
-                this.directAbort.abort();
-            }
-            this.directAbort = new AbortController();
-            this.view?.webview.postMessage({ command: 'codeStart' });
-
-            for await (const event of this.apiClient.executeDirectStream(
-                task,
-                this.getWorkspaceRoot(),
-                this.directAbort.signal
-            )) {
-                this.handleAgentEvent(event);
-            }
-
-            this.view?.webview.postMessage({ command: 'codeComplete' });
-        } catch (error) {
-            if (this.cancelRequested) {
-                this.view?.webview.postMessage({
-                    command: 'codeCancelled',
-                    message: '已取消'
-                });
-            } else {
-                this.view?.webview.postMessage({
-                    command: 'error',
-                    message: `执行失败: ${error}`
-                });
-            }
-        } finally {
-            this.directAbort = null;
-        }
-    }
 
     private handleAgentEvent(event: { type: string; data?: any }): void {
         switch (event.type) {
-            case 'run_id':
-                this.currentRunId = event.data?.run_id || null;
-                break;
-
             case 'cancelled':
                 this.view?.webview.postMessage({
                     command: 'codeCancelled',
@@ -344,17 +292,6 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
             return;
         }
 
-        if (this.directAbort) {
-            this.directAbort.abort();
-        }
-
-        if (this.currentRunId) {
-            try {
-                await this.apiClient.cancelRun(this.currentRunId);
-            } catch (error) {
-                console.error('Cancel failed:', error);
-            }
-        }
     }
 
     private async checkFileOperation(content: string): Promise<void> {
@@ -371,7 +308,7 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
                         '打开文件'
                     );
                     if (action === '打开文件') {
-                        await this.workspaceEditor.openFile(filePath);
+                        await this.openFile(filePath);
                     }
                 }
             } catch (e) {
@@ -380,14 +317,10 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async handleApplyFileEdit(path: string, content: string): Promise<void> {
-        try {
-            await this.workspaceEditor.createFile(path, content);
-            await this.workspaceEditor.openFile(path);
-            vscode.window.showInformationMessage(`文件已创建: ${path}`);
-        } catch (error) {
-            vscode.window.showErrorMessage(`创建文件失败: ${error}`);
-        }
+    private async openFile(path: string): Promise<void> {
+        const uri = vscode.Uri.file(path);
+        const document = await vscode.workspace.openTextDocument(uri);
+        await vscode.window.showTextDocument(document);
     }
 
     private getHtmlContent(): string {
@@ -539,38 +472,90 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
         }
 
         /* Plan 步骤 */
-        .plan-steps {
-            margin: 12px 0;
+        .plan-card {
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 8px;
+            padding: 12px;
+            background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
         }
 
-        .step-item {
-            padding: 10px 12px;
-            margin: 6px 0;
-            background: var(--vscode-editor-inactiveSelectionBackground);
-            border-radius: 6px;
-            border-left: 3px solid var(--vscode-button-background);
+        .plan-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
         }
 
-        .step-item.active {
-            border-left-color: #4CAF50;
-            background: rgba(76, 175, 80, 0.1);
+        .plan-title {
+            font-size: 13px;
+            font-weight: 600;
         }
 
-        .step-item.completed {
-            border-left-color: #888;
+        .plan-meta {
+            font-size: 11px;
             opacity: 0.7;
+            margin-top: 2px;
         }
 
-        .plan-actions {
-            margin-top: 12px;
+        .plan-actions-inline {
             display: flex;
             gap: 8px;
             flex-wrap: wrap;
         }
 
-        .plan-actions textarea {
+        .plan-steps {
+            margin: 10px 0;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .plan-step {
+            display: flex;
+            gap: 10px;
+            align-items: flex-start;
+            padding: 8px 10px;
+            border-radius: 6px;
+            border: 1px solid var(--vscode-panel-border);
+            background: var(--vscode-editor-inactiveSelectionBackground);
+        }
+
+        .plan-step-index {
+            width: 22px;
+            height: 22px;
+            border-radius: 999px;
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            font-size: 12px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .plan-step-text {
+            font-size: 13px;
+            line-height: 1.4;
+        }
+
+        .plan-refine {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px dashed var(--vscode-panel-border);
+        }
+
+        .plan-refine-title {
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+
+        .plan-refine textarea {
             width: 100%;
-            min-height: 40px;
+            min-height: 48px;
             padding: 8px;
             border: 1px solid var(--vscode-input-border);
             background: var(--vscode-input-background);
@@ -579,6 +564,12 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
             resize: none;
             font-family: inherit;
             margin-bottom: 8px;
+        }
+
+        .plan-refine-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
         }
 
         /* Agent 事件 */
@@ -1100,7 +1091,7 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
             <div class="welcome-desc">AI 助手帮助您进行 OP-TEE 开发</div>
             <div class="quick-actions">
                 <button class="quick-action" data-prompt="OP-TEE 如何实现 HMAC 操作？">问答示例</button>
-                <button class="quick-action" data-prompt="创建一个 AES 加密的 TA">规划示例</button>
+                <button class="quick-action" data-prompt="创建一个 AES 加密的 TA">Agent 示例</button>
             </div>
         </div>
     </div>
@@ -1126,11 +1117,8 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
                     <div class="dropdown-item active" data-mode="ask">
                         <span>💬</span><span>Ask</span><span class="dropdown-item-check">✓</span>
                     </div>
-                    <div class="dropdown-item" data-mode="plan">
-                        <span>📋</span><span>Plan</span><span class="dropdown-item-check">✓</span>
-                    </div>
-                    <div class="dropdown-item" data-mode="code">
-                        <span>⚡</span><span>Code</span><span class="dropdown-item-check">✓</span>
+                    <div class="dropdown-item" data-mode="agent">
+                        <span>🤖</span><span>Agent</span><span class="dropdown-item-check">✓</span>
                     </div>
                 </div>
             </div>
@@ -1391,11 +1379,8 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
                 case 'ask':
                     vscode.postMessage({ command: 'ask', query: newText });
                     break;
-                case 'plan':
+                case 'agent':
                     vscode.postMessage({ command: 'plan', task: newText });
-                    break;
-                case 'code':
-                    vscode.postMessage({ command: 'directExecute', task: newText });
                     break;
             }
         }
@@ -1681,21 +1666,60 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
             currentWorkflowId = workflowId;
             totalSteps = steps.length;
 
-            let html = '<div class="plan-steps">';
+            let html = '<div class="plan-card">';
+            html += '<div class="plan-header">';
+            html += '<div>';
+            html += '<div class="plan-title">计划预览</div>';
+            html += '<div class="plan-meta">共 ' + steps.length + ' 步 · 确认后自动执行</div>';
+            html += '</div>';
+            html += '<div class="plan-actions-inline">';
+            html += '<button class="quick-action" id="refine-toggle">修改计划</button>';
+            html += '<button class="quick-action btn-primary" id="confirm-btn">✓ 确认执行</button>';
+            html += '</div>';
+            html += '</div>';
+
+            html += '<div class="plan-steps">';
             steps.forEach((s, i) => {
-                html += '<div class="step-item" id="step-' + i + '">' + s.id + '. ' + s.description + '</div>';
+                const stepLabel = s.id || (i + 1);
+                html += '<div class="plan-step" id="step-' + i + '">';
+                html += '<div class="plan-step-index">' + escapeHtml(String(stepLabel)) + '</div>';
+                html += '<div class="plan-step-text">' + escapeHtml(s.description || '') + '</div>';
+                html += '</div>';
             });
             html += '</div>';
 
-            html += '<div class="plan-actions">';
-            html += '<textarea id="refine-input" placeholder="输入修改指令..."></textarea>';
-            html += '<button class="quick-action" id="refine-btn">修改计划</button>';
-            html += '<button class="quick-action btn-primary" id="confirm-btn">✓ 确认执行</button>';
+            html += '<div class="plan-refine hidden" id="refine-panel">';
+            html += '<div class="plan-refine-title">修改计划</div>';
+            html += '<textarea id="refine-input" placeholder="例如：合并步骤 2 和 3，删除步骤 4"></textarea>';
+            html += '<div class="plan-refine-actions">';
+            html += '<button class="quick-action" id="refine-btn">应用修改</button>';
+            html += '<button class="quick-action" id="refine-cancel">取消</button>';
+            html += '</div>';
+            html += '</div>';
             html += '</div>';
 
             msg.querySelector('.message-content').innerHTML = html;
 
             // 绑定事件
+            const refinePanel = document.getElementById('refine-panel');
+            const refineToggle = document.getElementById('refine-toggle');
+            const refineInput = document.getElementById('refine-input');
+            const refineCancel = document.getElementById('refine-cancel');
+
+            refineToggle.onclick = () => {
+                refinePanel.classList.toggle('hidden');
+                refineToggle.textContent = refinePanel.classList.contains('hidden') ? '修改计划' : '收起修改';
+                if (!refinePanel.classList.contains('hidden')) {
+                    refineInput.focus();
+                }
+            };
+
+            refineCancel.onclick = () => {
+                refinePanel.classList.add('hidden');
+                refineToggle.textContent = '修改计划';
+                refineInput.value = '';
+            };
+
             document.getElementById('refine-btn').onclick = () => {
                 const instruction = document.getElementById('refine-input').value.trim();
                 if (instruction && currentWorkflowId) {
@@ -1705,6 +1729,16 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
             document.getElementById('confirm-btn').onclick = () => {
                 if (currentWorkflowId) {
                     vscode.postMessage({ command: 'confirmPlan', workflowId: currentWorkflowId });
+                }
+            };
+
+            refineInput.onkeydown = (e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault();
+                    const instruction = refineInput.value.trim();
+                    if (instruction && currentWorkflowId) {
+                        vscode.postMessage({ command: 'refinePlan', workflowId: currentWorkflowId, instruction });
+                    }
                 }
             };
 
@@ -1805,8 +1839,7 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
             document.getElementById('mode-text').textContent = item.querySelectorAll('span')[1].textContent;
             const placeholders = {
                 ask: '输入您的问题...',
-                plan: '描述您要完成的任务...',
-                code: '输入要执行的任务...'
+                agent: '描述您要完成的任务...'
             };
             document.getElementById('main-input').placeholder = placeholders[currentMode];
             vscode.postMessage({ command: 'switchMode', mode: currentMode });
@@ -1839,11 +1872,8 @@ export class MainViewProvider implements vscode.WebviewViewProvider {
                 case 'ask':
                     vscode.postMessage({ command: 'ask', query: text });
                     break;
-                case 'plan':
+                case 'agent':
                     vscode.postMessage({ command: 'plan', task: text });
-                    break;
-                case 'code':
-                    vscode.postMessage({ command: 'directExecute', task: text });
                     break;
             }
 

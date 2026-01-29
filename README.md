@@ -4,20 +4,16 @@
 
 ## 功能特性
 
-### 三种工作模式
+### 两种工作模式
 
 1. **Ask 模式** - 基于 RAG 的智能问答
    - 支持纯文本知识库和代码知识库
    - 使用 Small-to-Big Retrieval 策略
 
-2. **Plan 模式** - 任务规划
+2. **Agent 模式** - 规划 + 执行一体化
    - 为用户任务生成结构化 Workflow
    - 支持对话式迭代修改
-   - 确认后进入 Code 模式执行
-
-3. **Code 模式** - 代码生成与执行
-   - 基于 LangChain ReAct 框架
-   - 思考 → 行动 → 观察循环
+   - 确认后自动执行（思考 → 行动 → 观察）
    - 实时代码修改与反馈
 
 ### 可信计算专用工具
@@ -139,8 +135,8 @@ python -m uvicorn app.main:app --reload
 ### 示例任务: 创建 HMAC 签名 TA
 
 1. **Ask 模式**: 询问 "OP-TEE 中如何实现 HMAC 操作?"
-2. **Plan 模式**: 输入 "创建一个 HMAC 签名的 TA，处理 4096bits 数据"
-3. **确认计划后自动进入 Code 模式执行**
+2. **Agent 模式**: 输入 "创建一个 HMAC 签名的 TA，处理 4096bits 数据"
+3. **确认计划后自动执行**
 
 生成的代码包括:
 - TA 入口文件和头文件
@@ -153,8 +149,7 @@ python -m uvicorn app.main:app --reload
 - [x] Phase 1: 基础框架
 - [ ] Phase 2: RAG 系统集成
 - [ ] Phase 3: LLM 多模型支持
-- [ ] Phase 4: Plan 模式完善
-- [ ] Phase 5: Code 模式 (ReAct Agent)
+- [ ] Phase 4: Agent 模式完善
 - [ ] Phase 6: 完善与优化
 
 ## 贡献指南

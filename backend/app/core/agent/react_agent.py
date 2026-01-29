@@ -1,12 +1,13 @@
 """ReAct Agent实现"""
 import asyncio
 import traceback
-from typing import AsyncIterator, List, Optional
+from pathlib import Path
+from typing import Any, AsyncIterator, Dict, List, Optional
 from dataclasses import dataclass, field
 
 from app.core.llm.base import BaseLLM
-from app.core.agent.prompts import REACT_SYSTEM_PROMPT, REACT_STEP_PROMPT, REACT_DIRECT_PROMPT
-from app.core.agent.parser import AgentOutputParser, Action, FinalAnswer, ThinkResult
+from app.core.agent.prompts import REACT_SYSTEM_PROMPT, REACT_STEP_PROMPT
+from app.core.agent.parser import AgentOutputParser, Action, FinalAnswer
 from app.tools.registry import ToolRegistry
 from app.schemas.models import AgentEvent, Workflow, WorkflowStep
 from app.infrastructure.logger import get_logger
@@ -25,6 +26,9 @@ class AgentContext:
     history: List[dict] = field(default_factory=list)
     iteration: int = 0
     workspace_root: Optional[str] = None
+    project_name: Optional[str] = None
+    ta_dir: Optional[str] = None
+    ca_dir: Optional[str] = None
 
 
 class ReActAgent:
@@ -34,6 +38,20 @@ class ReActAgent:
         self.llm = llm
         self.tools = tools
         self.parser = AgentOutputParser()
+
+    def _ensure_workspace_writable(self, workspace_root: Optional[str]) -> Optional[str]:
+        if not workspace_root:
+            return "缺少工作区路径，请先打开一个工作区文件夹"
+
+        try:
+            root = Path(workspace_root).expanduser().resolve()
+            root.mkdir(parents=True, exist_ok=True)
+            probe = root / ".tc_agent_write_test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return None
+        except Exception as exc:
+            return f"工作区不可写: {workspace_root} ({exc})"
 
     async def run(
         self,
@@ -47,38 +65,39 @@ class ReActAgent:
 
         ctx = AgentContext(task=task, workflow=workflow, workspace_root=workspace_root)
 
-        # 如果有workflow，按步骤执行
-        if workflow and workflow.steps:
-            for i, step in enumerate(workflow.steps):
-                if cancel_event and cancel_event.is_set():
-                    yield AgentEvent(type="cancelled", data={"message": "已取消"})
-                    return
+        workspace_error = self._ensure_workspace_writable(ctx.workspace_root)
+        if workspace_error:
+            yield AgentEvent(type="error", data={"message": workspace_error})
+            return
 
-                ctx.current_step_index = i
-                ctx.iteration = 0
-                ctx.history = []
+        if not workflow or not workflow.steps:
+            yield AgentEvent(type="error", data={"message": "缺少工作流，无法执行"})
+            return
 
-                yield AgentEvent(
-                    type="step_start",
-                    data={"step_index": i, "step": step.model_dump()},
-                )
+        for i, step in enumerate(workflow.steps):
+            if cancel_event and cancel_event.is_set():
+                yield AgentEvent(type="cancelled", data={"message": "已取消"})
+                return
 
-                async for event in self._execute_step(ctx, step, cancel_event):
-                    yield event
-                    if event.type == "cancelled":
-                        return
-
-                yield AgentEvent(type="step_complete", data={"step_index": i})
+            ctx.current_step_index = i
+            ctx.iteration = 0
+            ctx.history = []
 
             yield AgentEvent(
-                type="workflow_complete", data={"message": "所有步骤执行完成"}
+                type="step_start",
+                data={"step_index": i, "step": step.model_dump()},
             )
-        else:
-            # 直接执行任务
-            async for event in self._execute_direct(ctx, cancel_event):
+
+            async for event in self._execute_step(ctx, step, cancel_event):
                 yield event
                 if event.type == "cancelled":
                     return
+
+            yield AgentEvent(type="step_complete", data={"step_index": i})
+
+        yield AgentEvent(
+            type="workflow_complete", data={"message": "所有步骤执行完成"}
+        )
 
     async def _execute_step(
         self, ctx: AgentContext, step: WorkflowStep, cancel_event: Optional[asyncio.Event]
@@ -120,20 +139,41 @@ class ReActAgent:
                 break
 
             elif isinstance(result, Action):
+                normalized_input = self._normalize_tool_input(
+                    result.tool, result.input, ctx
+                )
+                if result.tool in ("ta_generator", "ca_generator"):
+                    skip_message = self._maybe_skip_generator(result.tool, ctx)
+                    if skip_message:
+                        yield AgentEvent(
+                            type="observation",
+                            data={"content": skip_message},
+                        )
+                        ctx.history.append({"type": "observation", "content": skip_message})
+                        continue
+                    if self._already_attempted_tool(ctx.history, result.tool):
+                        message = (
+                            f"{result.tool} 已在本步骤尝试过，若失败请检查工作区权限或手动修复后重试。"
+                        )
+                        yield AgentEvent(type="observation", data={"content": message})
+                        ctx.history.append({"type": "observation", "content": message})
+                        continue
                 yield AgentEvent(
                     type="action",
-                    data={"tool": result.tool, "input": result.input},
+                    data={"tool": result.tool, "input": normalized_input},
                 )
 
                 # 执行工具
-                observation = await self._execute_tool(result, cancel_event)
+                observation = await self._execute_tool(
+                    result.tool, normalized_input, ctx, cancel_event
+                )
                 yield AgentEvent(type="observation", data={"content": observation})
                 if cancel_event and cancel_event.is_set():
                     yield AgentEvent(type="cancelled", data={"message": "已取消"})
                     return
 
                 ctx.history.append(
-                    {"type": "action", "tool": result.tool, "input": result.input}
+                    {"type": "action", "tool": result.tool, "input": normalized_input}
                 )
                 ctx.history.append({"type": "observation", "content": observation})
 
@@ -147,66 +187,119 @@ class ReActAgent:
                 data={"message": f"步骤 {step.id} 达到最大迭代次数"},
             )
 
-    async def _execute_direct(
-        self, ctx: AgentContext, cancel_event: Optional[asyncio.Event]
-    ) -> AsyncIterator[AgentEvent]:
-        """直接执行任务（无workflow）"""
-        while ctx.iteration < MAX_ITERATIONS:
-            if cancel_event and cancel_event.is_set():
-                yield AgentEvent(type="cancelled", data={"message": "已取消"})
-                return
+    def _normalize_tool_input(
+        self,
+        tool: str,
+        tool_input: Dict[str, Any],
+        ctx: AgentContext,
+    ) -> Dict[str, Any]:
+        workspace_root = ctx.workspace_root
+        if not workspace_root or not isinstance(tool_input, dict):
+            return tool_input
 
-            ctx.iteration += 1
+        root = Path(workspace_root).expanduser().resolve()
+        normalized = dict(tool_input)
+        dir_keys = {"output_dir", "source_dir", "ta_dir", "ca_dir", "cwd"}
+        file_keys = {"path", "ta_path", "ca_file"}
 
-            prompt = self._build_direct_prompt(ctx)
-
+        def coerce_path(value: str, is_dir: bool) -> str:
             try:
-                response = await self.llm.generate(prompt)
-            except Exception as e:
-                logger.error("LLM调用失败", error=str(e))
-                yield AgentEvent(type="error", data={"message": str(e)})
-                break
+                path = Path(value).expanduser()
+                if not path.is_absolute():
+                    path = (root / path).resolve()
+                else:
+                    resolved = path.resolve()
+                    try:
+                        is_inside = resolved.is_relative_to(root)
+                    except AttributeError:
+                        is_inside = resolved == root or root in resolved.parents
+                    if not is_inside:
+                        if is_dir:
+                            return str((root / resolved.name).resolve())
+                        return str((root / resolved.name).resolve())
+                return str(path)
+            except Exception:
+                return value
 
-            result = self.parser.parse(response)
+        for key in dir_keys:
+            value = normalized.get(key)
+            if isinstance(value, str):
+                new_value = coerce_path(value, is_dir=True)
+                if new_value != value:
+                    logger.warning("路径已重写为工作区内", tool=tool, key=key, src=value, dest=new_value)
+                    normalized[key] = new_value
 
-            thought = self.parser.extract_thought(response)
-            if thought:
-                yield AgentEvent(type="thought", data={"content": thought})
-                ctx.history.append({"type": "thought", "content": thought})
+        for key in file_keys:
+            value = normalized.get(key)
+            if isinstance(value, str):
+                new_value = coerce_path(value, is_dir=False)
+                if new_value != value:
+                    logger.warning("路径已重写为工作区内", tool=tool, key=key, src=value, dest=new_value)
+                    normalized[key] = new_value
 
-            if isinstance(result, FinalAnswer):
-                yield AgentEvent(type="complete", data={"answer": result.content})
-                break
+        if tool in ("ta_generator", "ca_generator"):
+            if "output_dir" not in normalized or not normalized.get("output_dir"):
+                normalized["output_dir"] = str(root)
 
-            elif isinstance(result, Action):
-                yield AgentEvent(
-                    type="action",
-                    data={"tool": result.tool, "input": result.input},
-                )
+            if tool == "ta_generator":
+                name = normalized.get("name")
+                if ctx.project_name and name and name != ctx.project_name:
+                    normalized["name"] = ctx.project_name
+                elif name and not ctx.project_name:
+                    ctx.project_name = name
+            if tool == "ca_generator":
+                name = normalized.get("name")
+                ta_name = normalized.get("ta_name")
+                if ctx.project_name:
+                    if name and name != ctx.project_name:
+                        normalized["name"] = ctx.project_name
+                    if ta_name and ta_name != ctx.project_name:
+                        normalized["ta_name"] = ctx.project_name
+                elif name:
+                    ctx.project_name = name
+                elif ta_name:
+                    ctx.project_name = ta_name
 
-                observation = await self._execute_tool(result, cancel_event)
-                yield AgentEvent(type="observation", data={"content": observation})
-                if cancel_event and cancel_event.is_set():
-                    yield AgentEvent(type="cancelled", data={"message": "已取消"})
-                    return
+        if tool == "workflow_runner":
+            if ctx.ta_dir and not normalized.get("ta_dir"):
+                normalized["ta_dir"] = ctx.ta_dir
+            if ctx.ca_dir and (
+                not normalized.get("ca_dir") or normalized.get("ca_dir") == str(root)
+            ):
+                normalized["ca_dir"] = ctx.ca_dir
 
-                ctx.history.append(
-                    {"type": "action", "tool": result.tool, "input": result.input}
-                )
-                ctx.history.append({"type": "observation", "content": observation})
+        if tool == "docker_build":
+            build_type = normalized.get("build_type")
+            if build_type == "ta" and ctx.ta_dir and not normalized.get("source_dir"):
+                normalized["source_dir"] = ctx.ta_dir
+            if build_type == "ca" and ctx.ca_dir and not normalized.get("source_dir"):
+                normalized["source_dir"] = ctx.ca_dir
 
-        if ctx.iteration >= MAX_ITERATIONS:
-            yield AgentEvent(
-                type="complete",
-                data={"answer": "达到最大迭代次数，任务可能未完全完成。"},
-            )
+        return normalized
+
+    def _already_attempted_tool(self, history: List[dict], tool_name: str) -> bool:
+        for item in history:
+            if item.get("type") == "action" and item.get("tool") == tool_name:
+                return True
+        return False
+
+    def _maybe_skip_generator(self, tool_name: str, ctx: AgentContext) -> Optional[str]:
+        if tool_name == "ta_generator" and ctx.ta_dir:
+            return f"TA 已生成在 {ctx.ta_dir}，跳过重复生成。"
+        if tool_name == "ca_generator" and ctx.ca_dir:
+            return f"CA 已生成在 {ctx.ca_dir}，跳过重复生成。"
+        return None
 
     async def _execute_tool(
-        self, action: Action, cancel_event: Optional[asyncio.Event]
+        self,
+        tool_name: str,
+        tool_input: Dict[str, Any],
+        ctx: AgentContext,
+        cancel_event: Optional[asyncio.Event],
     ) -> str:
         """执行工具并返回观察结果"""
-        if action.input.get("__parse_error"):
-            raw = action.input.get("__raw_input", "")
+        if tool_input.get("__parse_error"):
+            raw = tool_input.get("__raw_input", "")
             return (
                 "输入格式错误: 需要提供有效的JSON对象，键名必须与工具参数名一致。"
                 f" 原始输入: {raw}"
@@ -215,19 +308,28 @@ class ReActAgent:
         if cancel_event and cancel_event.is_set():
             return "已取消"
 
-        tool = self.tools.get_tool(action.tool)
+        tool = self.tools.get_tool(tool_name)
 
         if not tool:
-            return f"错误: 工具 '{action.tool}' 不存在。可用工具: {[t.name for t in self.tools.get_all_tools()]}"
+            return f"错误: 工具 '{tool_name}' 不存在。可用工具: {[t.name for t in self.tools.get_all_tools()]}"
 
         try:
-            result = await tool.execute(**action.input, cancel_event=cancel_event)
+            result = await tool.execute(**tool_input, cancel_event=cancel_event)
+            if result.success and isinstance(result.data, dict):
+                if tool_name == "ta_generator":
+                    output_dir = result.data.get("output_dir")
+                    if output_dir:
+                        ctx.ta_dir = output_dir
+                if tool_name == "ca_generator":
+                    output_dir = result.data.get("output_dir")
+                    if output_dir:
+                        ctx.ca_dir = output_dir
             if result.success:
                 return str(result.data) if result.data else "执行成功"
             else:
                 return f"执行失败: {result.error}"
         except Exception as e:
-            logger.error("工具执行异常", tool=action.tool, input=action.input, error=str(e), tb=traceback.format_exc())
+            logger.error("工具执行异常", tool=tool_name, input=tool_input, error=str(e), tb=traceback.format_exc())
             return f"执行异常: {str(e)}"
 
     def _build_step_prompt(self, ctx: AgentContext, step: WorkflowStep) -> str:
@@ -246,22 +348,6 @@ class ReActAgent:
         )
 
         return f"{system}\n\n{step_prompt}"
-
-    def _build_direct_prompt(self, ctx: AgentContext) -> str:
-        """构建直接执行prompt"""
-        tools_desc = self.tools.get_tools_prompt()
-        system = REACT_SYSTEM_PROMPT.format(tools_description=tools_desc)
-
-        history_str = self._format_history(ctx.history)
-        workspace = ctx.workspace_root or "/tmp"
-
-        direct_prompt = REACT_DIRECT_PROMPT.format(
-            workspace_root=workspace,
-            task=ctx.task,
-            history=history_str or "（无历史记录）",
-        )
-
-        return f"{system}\n\n{direct_prompt}"
 
     def _format_history(self, history: List[dict]) -> str:
         """格式化历史记录"""

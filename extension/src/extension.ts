@@ -6,17 +6,14 @@
 import * as vscode from 'vscode';
 import { BackendManager } from './services/BackendManager';
 import { MainViewProvider } from './views/MainViewProvider';
-import { ApiClient } from './services/ApiClient';
 
 let backendManager: BackendManager;
-let apiClient: ApiClient;
 
 export async function activate(context: vscode.ExtensionContext) {
     console.log('TC Agent is activating...');
 
     // 启动Python后端
     backendManager = new BackendManager(context);
-    apiClient = new ApiClient(backendManager);
 
     // 注册主视图
     const mainViewProvider = new MainViewProvider(context, backendManager);
@@ -33,12 +30,8 @@ export async function activate(context: vscode.ExtensionContext) {
             mainViewProvider.switchMode('ask');
             vscode.commands.executeCommand('tcAgent.mainView.focus');
         }),
-        vscode.commands.registerCommand('tcAgent.plan', () => {
-            mainViewProvider.switchMode('plan');
-            vscode.commands.executeCommand('tcAgent.mainView.focus');
-        }),
-        vscode.commands.registerCommand('tcAgent.code', () => {
-            mainViewProvider.switchMode('code');
+        vscode.commands.registerCommand('tcAgent.agent', () => {
+            mainViewProvider.switchMode('agent');
             vscode.commands.executeCommand('tcAgent.mainView.focus');
         }),
         vscode.commands.registerCommand('tcAgent.switchModel', async () => {
@@ -51,18 +44,6 @@ export async function activate(context: vscode.ExtensionContext) {
                 await config.update('llm.provider', selected, true);
                 vscode.window.showInformationMessage(`已切换到 ${selected}`);
             }
-        }),
-        vscode.commands.registerCommand('tcAgent.startBackend', async () => {
-            try {
-                await backendManager.start();
-                vscode.window.showInformationMessage('TC Agent 后端已启动');
-            } catch (error) {
-                vscode.window.showErrorMessage(`启动失败: ${error}`);
-            }
-        }),
-        vscode.commands.registerCommand('tcAgent.stopBackend', () => {
-            backendManager.stop();
-            vscode.window.showInformationMessage('TC Agent 后端已停止');
         }),
         vscode.commands.registerCommand('tcAgent.addToKnowledge', async (uri?: vscode.Uri) => {
             try {
@@ -121,9 +102,6 @@ export async function activate(context: vscode.ExtensionContext) {
             } catch (error) {
                 vscode.window.showErrorMessage(`添加到知识库失败: ${error}`);
             }
-        }),
-        vscode.commands.registerCommand('tcAgent.showBackendLog', () => {
-            backendManager.showOutput();
         })
     );
 

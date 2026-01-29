@@ -5,16 +5,13 @@
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import * as path from 'path';
-import { EventEmitter } from 'events';
-
-export class BackendManager extends EventEmitter {
+export class BackendManager {
     private process: cp.ChildProcess | null = null;
     private port: number;
     private ready: boolean = false;
     private outputChannel: vscode.OutputChannel;
 
     constructor(private context: vscode.ExtensionContext) {
-        super();
         this.outputChannel = vscode.window.createOutputChannel('TC Agent Backend');
         this.port = this.getPort();
     }
@@ -99,7 +96,6 @@ export class BackendManager extends EventEmitter {
 
                 if (output.includes('Uvicorn running') || output.includes('Application startup complete')) {
                     this.ready = true;
-                    this.emit('ready');
                     resolve();
                 }
             });
@@ -111,7 +107,6 @@ export class BackendManager extends EventEmitter {
                 // uvicorn 的启动信息可能在 stderr
                 if (output.includes('Uvicorn running') || output.includes('Application startup complete')) {
                     this.ready = true;
-                    this.emit('ready');
                     resolve();
                 }
             });
@@ -124,7 +119,6 @@ export class BackendManager extends EventEmitter {
             this.process.on('exit', (code) => {
                 this.ready = false;
                 this.outputChannel.appendLine(`Backend exited with code: ${code}`);
-                this.emit('exit', code);
             });
 
             // 超时处理
@@ -151,9 +145,5 @@ export class BackendManager extends EventEmitter {
 
     getBaseUrl(): string {
         return `http://127.0.0.1:${this.port}`;
-    }
-
-    showOutput(): void {
-        this.outputChannel.show();
     }
 }

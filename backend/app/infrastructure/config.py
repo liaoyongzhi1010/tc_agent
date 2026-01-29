@@ -1,4 +1,6 @@
 """TC Agent 配置管理"""
+import os
+import platform
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from typing import Optional
@@ -37,7 +39,7 @@ class Settings(BaseSettings):
     rag_top_k: int = 5
 
     # QEMU配置
-    qemu_mode: str = "simple"  # simple, secure
+    qemu_mode: Optional[str] = None  # simple, secure, auto(None)
     qemu_test_command: Optional[str] = None
 
     # Agent配置
@@ -71,6 +73,24 @@ class Settings(BaseSettings):
 
 # 全局配置实例
 settings = Settings()
+
+# 自动检测QEMU模式（仅在未显式配置时）
+def _detect_qemu_mode() -> str:
+    if platform.system().lower() == "linux" and os.path.exists("/dev/kvm"):
+        return "secure"
+    return "simple"
+
+
+def _resolve_qemu_mode(value: Optional[str]) -> str:
+    if not value:
+        return _detect_qemu_mode()
+    normalized = value.strip().lower()
+    if normalized in ("simple", "secure"):
+        return normalized
+    return _detect_qemu_mode()
+
+
+settings.qemu_mode = _resolve_qemu_mode(settings.qemu_mode)
 
 # 确保数据目录存在
 settings.data_dir.mkdir(parents=True, exist_ok=True)

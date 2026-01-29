@@ -10,11 +10,6 @@ export interface AskRequest {
     model?: string;
 }
 
-export interface AskResponse {
-    answer: string;
-    sources: Array<{ source: string; score: number }>;
-}
-
 export interface PlanStep {
     id: string;
     description: string;
@@ -33,20 +28,6 @@ export class ApiClient {
 
     private getBaseUrl(): string {
         return this.backendManager.getBaseUrl();
-    }
-
-    async ask(request: AskRequest): Promise<AskResponse> {
-        const response = await fetch(`${this.getBaseUrl()}/ask/`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(request)
-        });
-
-        if (!response.ok) {
-            throw new Error(`Ask failed: ${response.statusText}`);
-        }
-
-        return response.json() as Promise<AskResponse>;
     }
 
     async *askStream(request: AskRequest): AsyncGenerator<{ type: string; data: any }> {
@@ -134,69 +115,6 @@ export class ApiClient {
     createCodeWebSocket(workflowId: string): WebSocket {
         const wsUrl = this.getBaseUrl().replace('http', 'ws');
         return new WebSocket(`${wsUrl}/code/execute/${workflowId}`);
-    }
-
-    async *executeDirectStream(
-        task: string,
-        workspaceRoot?: string,
-        signal?: AbortSignal
-    ): AsyncGenerator<{ type: string; data: any }> {
-        const response = await fetch(`${this.getBaseUrl()}/code/execute-direct`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ task, workspace_root: workspaceRoot }),
-            signal
-        });
-
-        if (!response.ok) {
-            throw new Error(`Execute failed: ${response.statusText}`);
-        }
-
-        const reader = response.body?.getReader();
-        if (!reader) {
-            throw new Error('No response body');
-        }
-
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                    try {
-                        const data = JSON.parse(line.slice(6));
-                        yield data;
-                    } catch (e) {
-                        console.error('Failed to parse SSE data:', line);
-                    }
-                }
-            }
-        }
-    }
-
-    async getTools(): Promise<Array<{ name: string; description: string; schema: any }>> {
-        const response = await fetch(`${this.getBaseUrl()}/code/tools`);
-        if (!response.ok) {
-            throw new Error(`Get tools failed: ${response.statusText}`);
-        }
-        const data = await response.json() as { tools: Array<{ name: string; description: string; schema: any }> };
-        return data.tools;
-    }
-
-    async cancelRun(runId: string): Promise<void> {
-        const response = await fetch(`${this.getBaseUrl()}/code/cancel/${runId}`, {
-            method: 'POST'
-        });
-        if (!response.ok) {
-            throw new Error(`Cancel failed: ${response.statusText}`);
-        }
     }
 
     async healthCheck(): Promise<boolean> {
