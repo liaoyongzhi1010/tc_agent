@@ -30,7 +30,9 @@ class WorkflowManager:
         rag_context = context or ""
         if self.retriever and not context:
             try:
-                docs = await self.retriever.retrieve(task, top_k=3)
+                docs = await self.retriever.retrieve(
+                    task, top_k=3, where={"scope": "plan"}
+                )
                 if docs:
                     rag_context = "\n\n---\n\n".join(
                         [

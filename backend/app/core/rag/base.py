@@ -1,6 +1,6 @@
 """RAG检索器抽象基类"""
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Optional, Dict
 
 from app.schemas.models import RetrievedDoc
 
@@ -9,7 +9,9 @@ class BaseRetriever(ABC):
     """RAG检索器抽象基类，扩展时继承此类"""
 
     @abstractmethod
-    async def retrieve(self, query: str, top_k: int = 5) -> List[RetrievedDoc]:
+    async def retrieve(
+        self, query: str, top_k: int = 5, where: Optional[Dict[str, str]] = None
+    ) -> List[RetrievedDoc]:
         """检索相关文档"""
         pass
 

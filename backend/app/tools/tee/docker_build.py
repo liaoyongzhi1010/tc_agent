@@ -24,6 +24,23 @@ class DockerBuildTool(BaseTool):
     name = "docker_build"
     description = "使用Docker容器编译OP-TEE TA或CA代码。支持编译TA(.ta文件)和CA(可执行文件)"
 
+    def _classify_build_error(self, stderr: str, stdout: str) -> str:
+        text = f"{stderr}\n{stdout}".lower()
+        if "超时" in text or "timeout" in text:
+            return "timeout"
+        if "undefined reference" in text or "collect2" in text or "ld:" in text:
+            return "link_error"
+        if "error:" in text or "fatal error" in text or "no rule to make target" in text:
+            return "compile_error"
+        return "compile_error"
+
+    def _list_executables(self, directory: Path) -> list[Path]:
+        return [
+            path
+            for path in directory.iterdir()
+            if path.is_file() and os.access(path, os.X_OK)
+        ]
+
     async def execute(
         self,
         source_dir: str,
@@ -64,7 +81,17 @@ class DockerBuildTool(BaseTool):
                 logger.info("Docker镜像不存在，开始构建...")
                 build_result = await self._build_image(cancel_event=cancel_event)
                 if not build_result["success"]:
-                    return ToolResult(success=False, error=f"构建Docker镜像失败: {build_result['error']}")
+                    return ToolResult(
+                        success=False,
+                        error=f"构建Docker镜像失败: {build_result['error']}",
+                        data={
+                            "stage": "build_image",
+                            "error_type": self._classify_build_error(
+                                build_result.get("error", ""), ""
+                            ),
+                            "stderr": build_result.get("error", ""),
+                        },
+                    )
                 logger.info("Docker镜像构建完成")
 
             # 执行编译
@@ -135,7 +162,16 @@ class DockerBuildTool(BaseTool):
         if result["returncode"] != 0:
             return ToolResult(
                 success=False,
-                error=f"TA编译失败:\n{result['stderr'] or result['stdout']}"
+                error=f"TA编译失败:\n{result['stderr'] or result['stdout']}",
+                data={
+                    "stage": "build_ta",
+                    "error_type": self._classify_build_error(
+                        result.get("stderr", ""), result.get("stdout", "")
+                    ),
+                    "stdout": result.get("stdout", ""),
+                    "stderr": result.get("stderr", ""),
+                    "returncode": result.get("returncode"),
+                },
             )
 
         # 查找生成的.ta文件
@@ -204,7 +240,32 @@ class DockerBuildTool(BaseTool):
         if result["returncode"] != 0:
             return ToolResult(
                 success=False,
-                error=f"CA编译失败:\n{result['stderr'] or result['stdout']}"
+                error=f"CA编译失败:\n{result['stderr'] or result['stdout']}",
+                data={
+                    "stage": "build_ca",
+                    "error_type": self._classify_build_error(
+                        result.get("stderr", ""), result.get("stdout", "")
+                    ),
+                    "stdout": result.get("stdout", ""),
+                    "stderr": result.get("stderr", ""),
+                    "returncode": result.get("returncode"),
+                },
+            )
+
+        executables = self._list_executables(output_path)
+        if len(executables) != 1:
+            return ToolResult(
+                success=False,
+                error=(
+                    f"CA编译完成但可执行文件数量={len(executables)}，"
+                    "请确保输出目录仅包含一个可执行文件"
+                ),
+                data={
+                    "stage": "build_ca",
+                    "error_type": "build_output_invalid",
+                    "output_dir": str(output_path),
+                    "executables": [str(path) for path in executables],
+                },
             )
 
         return ToolResult(
@@ -212,6 +273,7 @@ class DockerBuildTool(BaseTool):
             data={
                 "message": "CA编译成功",
                 "output_dir": str(output_path),
+                "executables": [str(executables[0])],
             }
         )
 

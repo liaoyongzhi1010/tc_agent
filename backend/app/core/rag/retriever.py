@@ -84,14 +84,21 @@ class ParentDocumentRetriever(BaseRetriever):
 
                 # 存储到Chroma
                 child_ids = [f"{parent_id}_c{j}" for j in range(len(child_chunks))]
-                child_metadatas = [
-                    {
-                        "parent_id": parent_id,
-                        "source": meta.get("source", ""),
-                        "child_index": j,
-                    }
-                    for j in range(len(child_chunks))
-                ]
+                filter_meta = {
+                    key: meta.get(key)
+                    for key in ("scope", "kb", "category")
+                    if meta.get(key) is not None
+                }
+                child_metadatas = []
+                for j in range(len(child_chunks)):
+                    child_metadatas.append(
+                        {
+                            "parent_id": parent_id,
+                            "source": meta.get("source", ""),
+                            "child_index": j,
+                            **filter_meta,
+                        }
+                    )
 
                 self.collection.add(
                     ids=child_ids,
@@ -102,7 +109,9 @@ class ParentDocumentRetriever(BaseRetriever):
 
         logger.debug("文档已索引", doc_count=len(documents))
 
-    async def retrieve(self, query: str, top_k: int = 5) -> List[RetrievedDoc]:
+    async def retrieve(
+        self, query: str, top_k: int = 5, where: Optional[Dict[str, str]] = None
+    ) -> List[RetrievedDoc]:
         """检索相关文档"""
         if not query or not query.strip():
             return []
@@ -115,6 +124,7 @@ class ParentDocumentRetriever(BaseRetriever):
             query_embeddings=[query_embedding],
             n_results=top_k * 3,  # 多检索一些,去重后取top_k
             include=["documents", "metadatas", "distances"],
+            where=where,
         )
 
         if not results["ids"] or not results["ids"][0]:

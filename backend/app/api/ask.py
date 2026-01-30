@@ -43,7 +43,7 @@ async def ask_question_stream(body: AskRequest):
             retriever = vector_store.get_retriever(body.knowledge_type or "all")
 
             # RAG检索
-            docs = await retriever.retrieve(body.query, top_k=5)
+            docs = await retriever.retrieve(body.query, top_k=5, where={"scope": "ask"})
 
             # 发送来源信息
             sources_data = [

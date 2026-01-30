@@ -71,20 +71,42 @@ class VectorStoreManager:
         """加载预置知识库"""
         preset_dir = Path(__file__).parent.parent.parent / "knowledge"
 
-        # 加载文本知识
-        docs_dir = preset_dir / "docs"
-        if docs_dir.exists():
-            count = await self._load_directory(docs_dir, "text", ["*.md", "*.txt"])
-            logger.info("预置文本知识加载完成", count=count)
+        # Ask 知识
+        ask_docs = preset_dir / "ask" / "docs"
+        if ask_docs.exists():
+            count = await self._load_directory(
+                ask_docs, "text", ["*.md", "*.txt"], {"scope": "ask"}
+            )
+            logger.info("预置文本知识加载完成(ask)", count=count)
 
-        # 加载代码知识
-        code_dir = preset_dir / "code"
-        if code_dir.exists():
-            count = await self._load_directory(code_dir, "code", ["*.c", "*.h", "*.py"])
-            logger.info("预置代码知识加载完成", count=count)
+        ask_code = preset_dir / "ask" / "code"
+        if ask_code.exists():
+            count = await self._load_directory(
+                ask_code, "code", ["*.c", "*.h", "*.py"], {"scope": "ask"}
+            )
+            logger.info("预置代码知识加载完成(ask)", count=count)
+
+        # Plan 知识
+        plan_docs = preset_dir / "plan" / "docs"
+        if plan_docs.exists():
+            count = await self._load_directory(
+                plan_docs, "text", ["*.md", "*.txt"], {"scope": "plan"}
+            )
+            logger.info("预置文本知识加载完成(plan)", count=count)
+
+        plan_code = preset_dir / "plan" / "code"
+        if plan_code.exists():
+            count = await self._load_directory(
+                plan_code, "code", ["*.c", "*.h", "*.py"], {"scope": "plan"}
+            )
+            logger.info("预置代码知识加载完成(plan)", count=count)
 
     async def _load_directory(
-        self, directory: Path, collection: str, patterns: List[str]
+        self,
+        directory: Path,
+        collection: str,
+        patterns: List[str],
+        extra_metadata: Optional[dict] = None,
     ) -> int:
         """加载目录下的文件"""
         count = 0
@@ -93,16 +115,17 @@ class VectorStoreManager:
                 try:
                     content = file_path.read_text(encoding="utf-8")
                     if content.strip():
+                        metadata = {
+                            "source": str(file_path),
+                            "filename": file_path.name,
+                            "type": file_path.suffix,
+                        }
+                        if extra_metadata:
+                            metadata.update(extra_metadata)
                         await self.add_documents(
                             collection=collection,
                             documents=[content],
-                            metadatas=[
-                                {
-                                    "source": str(file_path),
-                                    "filename": file_path.name,
-                                    "type": file_path.suffix,
-                                }
-                            ],
+                            metadatas=[metadata],
                         )
                         count += 1
                 except Exception as e:
@@ -127,10 +150,16 @@ class VectorStoreManager:
         logger.info("文档已添加", collection=collection, count=len(documents))
 
     async def add_from_directory(
-        self, directory: Path, collection: str, patterns: List[str]
+        self,
+        directory: Path,
+        collection: str,
+        patterns: List[str],
+        extra_metadata: Optional[dict] = None,
     ) -> int:
         """从目录添加文件"""
-        return await self._load_directory(directory, collection, patterns)
+        return await self._load_directory(
+            directory, collection, patterns, extra_metadata
+        )
 
     async def add_file(self, file_path: Path, collection: str) -> None:
         """添加单个文件"""
@@ -177,13 +206,15 @@ class MultiCollectionRetriever:
     def __init__(self, retrievers: List[ParentDocumentRetriever]):
         self.retrievers = retrievers
 
-    async def retrieve(self, query: str, top_k: int = 5) -> List[RetrievedDoc]:
+    async def retrieve(
+        self, query: str, top_k: int = 5, where: Optional[dict] = None
+    ) -> List[RetrievedDoc]:
         """从所有集合检索并合并结果"""
         all_results = []
 
         for retriever in self.retrievers:
             try:
-                results = await retriever.retrieve(query, top_k=top_k)
+                results = await retriever.retrieve(query, top_k=top_k, where=where)
                 all_results.extend(results)
             except Exception as e:
                 logger.warning("检索失败", error=str(e))

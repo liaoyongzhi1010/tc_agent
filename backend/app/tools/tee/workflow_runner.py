@@ -96,14 +96,25 @@ class WorkflowRunner(BaseTool):
                     error=ca_build.error or "CA编译失败",
                     data={"stage": "build_ca", "details": ca_build.data},
                 )
-            try:
-                ca_exe_path = find_executable_file(Path(ca_dir))
-            except ValueError as exc:
-                return ToolResult(
-                    success=False,
-                    error=str(exc),
-                    data={"stage": "ca_resolve"},
-                )
+            if isinstance(ca_build.data, dict):
+                executables = ca_build.data.get("executables")
+                if executables:
+                    if len(executables) != 1:
+                        return ToolResult(
+                            success=False,
+                            error="CA输出可执行文件数量不唯一",
+                            data={"stage": "ca_resolve", "executables": executables},
+                        )
+                    ca_exe_path = Path(executables[0])
+            if not ca_exe_path:
+                try:
+                    ca_exe_path = find_executable_file(Path(ca_dir))
+                except ValueError as exc:
+                    return ToolResult(
+                        success=False,
+                        error=str(exc),
+                        data={"stage": "ca_resolve"},
+                    )
 
         if settings.qemu_test_command:
             test_command = settings.qemu_test_command

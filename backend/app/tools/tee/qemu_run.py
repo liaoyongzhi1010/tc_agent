@@ -21,6 +21,14 @@ class QemuRunTool(BaseTool):
     name = "qemu_run"
     description = "在 QEMU ARM64 模拟器中启动 OP-TEE 环境，加载并测试 TA。可以看到实际运行输出。"
 
+    def _classify_qemu_error(self, result: Dict[str, Any]) -> str:
+        stderr = result.get("stderr", "")
+        stdout = result.get("stdout", "")
+        text = f"{stderr}\n{stdout}".lower()
+        if result.get("returncode") == -1 and ("超时" in text or "timeout" in text):
+            return "timeout"
+        return "run_error"
+
     async def execute(
         self,
         ta_dir: str,
@@ -116,7 +124,14 @@ class QemuRunTool(BaseTool):
                 if result["returncode"] != 0 and "TEST_COMPLETE" not in result["stdout"]:
                     return ToolResult(
                         success=False,
-                        error=f"QEMU 测试失败:\n{result['stderr'] or result['stdout']}"
+                        error=f"QEMU 测试失败:\n{result['stderr'] or result['stdout']}",
+                        data={
+                            "stage": "qemu_run",
+                            "error_type": self._classify_qemu_error(result),
+                            "stdout": result.get("stdout", ""),
+                            "stderr": result.get("stderr", ""),
+                            "returncode": result.get("returncode"),
+                        },
                     )
 
                 return ToolResult(

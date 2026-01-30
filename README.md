@@ -150,6 +150,7 @@ python -m uvicorn app.main:app --reload
 - [ ] Phase 2: RAG 系统集成
 - [ ] Phase 3: LLM 多模型支持
 - [ ] Phase 4: Agent 模式完善
+- [ ] Phase 5: Docker 镜像拆分（build/runtime），降低体积并提升并发
 - [ ] Phase 6: 完善与优化
 
 ## 贡献指南

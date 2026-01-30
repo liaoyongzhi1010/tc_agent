@@ -12,6 +12,19 @@ LABEL optee_version="4.0"
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
 
+# 启用多架构包（安装 arm64 依赖用于交叉编译）
+RUN dpkg --add-architecture arm64 && \
+    printf "deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse\n\
+deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe multiverse\n\
+deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-backports main restricted universe multiverse\n\
+deb [arch=amd64] http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse\n" \
+    > /etc/apt/sources.list && \
+    printf "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse\n\
+deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse\n\
+deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse\n\
+deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-backports main restricted universe multiverse\n" \
+    > /etc/apt/sources.list.d/arm64.list
+
 # ========================================
 # 1. 安装基础依赖
 # ========================================
@@ -46,6 +59,7 @@ RUN apt-get update && apt-get install -y \
     libpixman-1-dev \
     libslirp-dev \
     libssl-dev \
+    libssl-dev:arm64 \
     libtool \
     make \
     mtools \
@@ -59,6 +73,8 @@ RUN apt-get update && apt-get install -y \
     rsync \
     unzip \
     uuid-dev \
+    uuid-dev:arm64 \
+    libuuid1:arm64 \
     wget \
     xdg-utils \
     xterm \
@@ -66,8 +82,50 @@ RUN apt-get update && apt-get install -y \
     zlib1g-dev \
     dosfstools \
     file \
+    pkg-config \
     xxd \
     && rm -rf /var/lib/apt/lists/*
+
+# optee_client/libteeacl 依赖 <uuid.h>，在 Ubuntu 中为 uuid/uuid.h
+RUN if [ -f /usr/include/uuid/uuid.h ]; then ln -sf /usr/include/uuid/uuid.h /usr/include/uuid.h; fi
+
+# 交叉编译 xtest 需要 opensslconf.h（多架构路径），提供一个稳定的 include 入口
+RUN if [ ! -f /usr/include/openssl/opensslconf.h ]; then \
+        if [ -f /usr/include/aarch64-linux-gnu/openssl/opensslconf.h ]; then \
+            ln -sf /usr/include/aarch64-linux-gnu/openssl/opensslconf.h /usr/include/openssl/opensslconf.h; \
+        elif [ -f /usr/include/x86_64-linux-gnu/openssl/opensslconf.h ]; then \
+            ln -sf /usr/include/x86_64-linux-gnu/openssl/opensslconf.h /usr/include/openssl/opensslconf.h; \
+        fi; \
+    fi
+# optee_client 期望 aarch64-linux-gnu-pkg-config（兼容 uuid.pc 缺失场景）
+RUN cat > /usr/bin/aarch64-linux-gnu-pkg-config << 'EOF'
+#!/bin/sh
+uuid=0
+for a in "$@"; do
+  [ "$a" = "uuid" ] && uuid=1
+done
+if [ "$uuid" -eq 1 ]; then
+  case " $* " in
+    *" --modversion "*) echo "2.37.2"; exit 0;;
+    *" --cflags "*) echo "-I/usr/include"; exit 0;;
+    *" --libs "*) echo "-L/usr/lib/aarch64-linux-gnu -luuid"; exit 0;;
+    *" --exists "*) exit 0;;
+    *" --atleast-version="*) exit 0;;
+    *" --atleast-version "*) exit 0;;
+  esac
+fi
+PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/lib/pkgconfig:/usr/share/pkgconfig exec /usr/bin/pkg-config "$@"
+EOF
+RUN chmod +x /usr/bin/aarch64-linux-gnu-pkg-config
+# 确保 aarch64 的 libuuid 可被 -luuid 找到，并提供 uuid.pc
+RUN if [ -f /usr/lib/aarch64-linux-gnu/libuuid.so.1 ] && [ ! -f /usr/lib/aarch64-linux-gnu/libuuid.so ]; then \
+        ln -sf /usr/lib/aarch64-linux-gnu/libuuid.so.1 /usr/lib/aarch64-linux-gnu/libuuid.so; \
+    fi && \
+    if [ ! -f /usr/lib/aarch64-linux-gnu/pkgconfig/uuid.pc ]; then \
+        mkdir -p /usr/lib/aarch64-linux-gnu/pkgconfig && \
+        printf 'prefix=/usr\nexec_prefix=${prefix}\nlibdir=/usr/lib/aarch64-linux-gnu\nincludedir=/usr/include\n\nName: uuid\nDescription: uuid library\nVersion: 2.37.2\nLibs: -L${libdir} -luuid\nCflags: -I${includedir}\n' \
+        > /usr/lib/aarch64-linux-gnu/pkgconfig/uuid.pc; \
+    fi
 
 # 安装 ARM 交叉编译工具链
 RUN apt-get update && apt-get install -y \
@@ -99,7 +157,10 @@ RUN cd /optee/optee_os && \
 
 # 编译 OP-TEE Client
 RUN cd /optee/optee_client && \
+    PKG_CONFIG=aarch64-linux-gnu-pkg-config \
     make CROSS_COMPILE=aarch64-linux-gnu- \
+    CFG_TEE_SUPP_PLUGINS=y \
+    CFG_TEE_PLUGIN_LOAD_PATH=/usr/lib/tee-supplicant/plugins \
     -j$(nproc)
 
 # 设置 TA 开发环境变量
@@ -119,6 +180,10 @@ RUN git clone --depth 1 --branch v8.1.0 https://github.com/qemu/qemu.git && \
     make -j$(nproc) && \
     make install && \
     cd .. && rm -rf qemu
+
+# 3.5 生成 QEMU virt DTB 并写入 bootargs（供 TF-A NT_FW_CONFIG 使用）
+RUN qemu-system-aarch64 -machine virt,secure=on,gic-version=2,virtualization=false,dumpdtb=/optee/virt.dtb -cpu cortex-a57 -smp 1 -m 2048 -display none -nographic && \
+    fdtput -t s -p /optee/virt.dtb /chosen bootargs "console=ttyAMA0,115200 earlycon=pl011,0x09000000 rdinit=/sbin/init loglevel=8"
 
 # ========================================
 # 4. 编译 Linux 内核 (带 OP-TEE 支持)
@@ -150,6 +215,9 @@ RUN git clone --depth 1 --branch v6.1 https://github.com/torvalds/linux.git linu
 # ========================================
 RUN git clone --depth 1 --branch v2.10.0 https://github.com/ARM-software/arm-trusted-firmware.git tf-a
 
+# 放大 QEMU FIP 可用空间（内核作为 BL33 时需要更大 FIP）
+RUN sed -i 's/^#define PLAT_QEMU_FIP_MAX_SIZE.*/#define PLAT_QEMU_FIP_MAX_SIZE 0x03FC0000/' /optee/tf-a/plat/qemu/qemu/include/platform_def.h
+
 # 编译 TF-A + OP-TEE for QEMU virt 平台
 RUN cd /optee/tf-a && \
     make PLAT=qemu \
@@ -158,15 +226,17 @@ RUN cd /optee/tf-a && \
     BL32_EXTRA1=/optee/optee_os/out/arm-plat-vexpress/core/tee-pager_v2.bin \
     BL32_EXTRA2=/optee/optee_os/out/arm-plat-vexpress/core/tee-pageable_v2.bin \
     BL33=/optee/Image \
+    ARM_LINUX_KERNEL_AS_BL33=1 \
     SPD=opteed \
     CROSS_COMPILE=aarch64-linux-gnu- \
-    DEBUG=0 \
+    DEBUG=1 \
+    LOG_LEVEL=50 \
     -j$(nproc) all fip
 
 # 复制 ATF 输出文件并创建 flash.bin
 RUN mkdir -p /optee/atf && \
-    cp /optee/tf-a/build/qemu/release/bl1.bin /optee/atf/ && \
-    cp /optee/tf-a/build/qemu/release/fip.bin /optee/atf/ && \
+    cp /optee/tf-a/build/qemu/debug/bl1.bin /optee/atf/ && \
+    cp /optee/tf-a/build/qemu/debug/fip.bin /optee/atf/ && \
     dd if=/dev/zero of=/optee/atf/flash.bin bs=1M count=64 && \
     dd if=/optee/atf/bl1.bin of=/optee/atf/flash.bin conv=notrunc && \
     dd if=/optee/atf/fip.bin of=/optee/atf/flash.bin seek=64 bs=4096 conv=notrunc
@@ -189,17 +259,27 @@ RUN mkdir -p /optee/rootfs/dev \
     /optee/rootfs/proc \
     /optee/rootfs/sys \
     /optee/rootfs/tmp \
+    /optee/rootfs/data/tee \
     /optee/rootfs/etc/init.d \
     /optee/rootfs/root \
     /optee/rootfs/var/run \
+    /optee/rootfs/var/lib/tee \
     /optee/rootfs/lib/optee_armtz \
     /optee/rootfs/usr/lib \
+    /optee/rootfs/usr/lib/tee-supplicant/plugins \
     /optee/rootfs/usr/bin \
     /optee/rootfs/usr/sbin
 
 # 复制 OP-TEE 客户端库和工具
 RUN cp -a /optee/optee_client/out/export/usr/lib/*.so* /optee/rootfs/usr/lib/ && \
     cp /optee/optee_client/out/tee-supplicant/tee-supplicant /optee/rootfs/usr/sbin/ && \
+    cp /optee/optee_os/out/arm-plat-vexpress/ta/*/*.ta /optee/rootfs/lib/optee_armtz/ 2>/dev/null || true && \
+    cp /optee/optee_test/out/supp_plugin/*.plugin /optee/rootfs/usr/lib/tee-supplicant/plugins/ 2>/dev/null || true && \
+    mkdir -p /optee/rootfs/lib/aarch64-linux-gnu && \
+    cp -a /lib/aarch64-linux-gnu/libc.so.6 /lib/aarch64-linux-gnu/libm.so.6 /optee/rootfs/lib/aarch64-linux-gnu/ && \
+    cp -a /lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 /optee/rootfs/lib/aarch64-linux-gnu/ && \
+    ln -sf aarch64-linux-gnu/ld-linux-aarch64.so.1 /optee/rootfs/lib/ld-linux-aarch64.so.1 && \
+    cp -a /usr/lib/aarch64-linux-gnu/libcrypto.so.3 /optee/rootfs/usr/lib/ && \
     cd /optee/rootfs/lib && \
     ln -sf ../usr/lib/libteec.so.1.0.0 libteec.so.1.0.0 && \
     ln -sf libteec.so.1.0.0 libteec.so.1 && \
@@ -215,7 +295,9 @@ RUN cd /optee/optee_test && \
     # 复制 xtest 到 rootfs
     cp /optee/optee_test/out/xtest/xtest /optee/rootfs/usr/bin/ 2>/dev/null || true && \
     # 复制测试 TA
-    cp /optee/optee_test/out/ta/*/*.ta /optee/rootfs/lib/optee_armtz/ 2>/dev/null || true
+    cp /optee/optee_test/out/ta/*/*.ta /optee/rootfs/lib/optee_armtz/ 2>/dev/null || true && \
+    # 复制 supplicant plugin（需在 optee_test 编译后）
+    cp /optee/optee_test/out/supp_plugin/*.plugin /optee/rootfs/usr/lib/tee-supplicant/plugins/ 2>/dev/null || true
 
 # 创建设备节点
 RUN cd /optee/rootfs && \
@@ -232,8 +314,10 @@ RUN cd /optee/rootfs && \
 RUN echo '#!/bin/sh\n\
 mount -t proc proc /proc\n\
 mount -t sysfs sysfs /sys\n\
+mount -t devtmpfs devtmpfs /dev\n\
 mount -t devpts devpts /dev/pts 2>/dev/null || true\n\
 mount -t tmpfs tmpfs /tmp\n\
+/sbin/ifconfig lo up 2>/dev/null || true\n\
 \n\
 echo ""\n\
 echo "========================================"\n\
@@ -242,7 +326,7 @@ echo "========================================"\n\
 \n\
 # 启动 tee-supplicant\n\
 echo "Starting tee-supplicant..."\n\
-/usr/sbin/tee-supplicant -d\n\
+/usr/sbin/tee-supplicant -p /usr/lib/tee-supplicant/plugins &\n\
 sleep 1\n\
 \n\
 echo ""\n\
@@ -330,6 +414,15 @@ fi\n\
 # 重新打包 rootfs\n\
 find . | cpio -H newc -o 2>/dev/null | gzip > /tmp/rootfs_custom.cpio.gz\n\
 \n\
+INITRD_ADDR=0x48000000\n\
+INITRD_SIZE=$(stat -c %s /tmp/rootfs_custom.cpio.gz)\n\
+INITRD_END=$(printf "0x%x" $((INITRD_ADDR + INITRD_SIZE)))\n\
+cp /optee/virt.dtb /tmp/virt.dtb\n\
+fdtput -p -t x /tmp/virt.dtb /chosen linux,initrd-start 0x0 $INITRD_ADDR\n\
+fdtput -p -t x /tmp/virt.dtb /chosen linux,initrd-end 0x0 $INITRD_END\n\
+fdtput -p -t s /tmp/virt.dtb /pl061@9030000 status "disabled"\n\
+fdtput -p -t s /tmp/virt.dtb /gpio-keys status "disabled"\n\
+\n\
 echo ""\n\
 echo "Starting QEMU with OP-TEE (ATF boot)..."\n\
 echo "(Press Ctrl+A then X to exit)"\n\
@@ -337,12 +430,14 @@ echo ""\n\
 \n\
 qemu-system-aarch64 \\\n\
     -nographic \\\n\
-    -machine virt,secure=on,gic-version=3,virtualization=false \\\n\
+    -serial mon:stdio \\\n\
+    -machine virt,secure=on,gic-version=2,virtualization=false \\\n\
     -cpu cortex-a57 \\\n\
     -smp 1 \\\n\
-    -m 1024 \\\n\
+    -m 2048 \\\n\
     -bios /optee/atf/flash.bin \\\n\
-    -device loader,file=/tmp/rootfs_custom.cpio.gz,addr=0x44000000 \\\n\
+    -dtb /tmp/virt.dtb \\\n\
+    -device loader,file=/tmp/rootfs_custom.cpio.gz,addr=$INITRD_ADDR \\\n\
     -no-reboot\n\
 \n\
 rm -rf $WORK_DIR /tmp/rootfs_custom.cpio.gz\n\
@@ -397,7 +492,9 @@ cat > etc/init.d/rcS << EOF\n\
 #!/bin/sh\n\
 mount -t proc proc /proc\n\
 mount -t sysfs sysfs /sys\n\
-/usr/sbin/tee-supplicant -d\n\
+mount -t devtmpfs devtmpfs /dev\n\
+/sbin/ifconfig lo up 2>/dev/null || true\n\
+/usr/sbin/tee-supplicant -p /usr/lib/tee-supplicant/plugins &\n\
 sleep 1\n\
 echo ""\n\
 echo "========================================"\n\
@@ -418,18 +515,29 @@ chmod +x etc/init.d/rcS\n\
 \n\
 find . | cpio -H newc -o 2>/dev/null | gzip > /tmp/rootfs_test.cpio.gz\n\
 \n\
+INITRD_ADDR=0x48000000\n\
+INITRD_SIZE=$(stat -c %s /tmp/rootfs_test.cpio.gz)\n\
+INITRD_END=$(printf "0x%x" $((INITRD_ADDR + INITRD_SIZE)))\n\
+cp /optee/virt.dtb /tmp/virt.dtb\n\
+fdtput -p -t x /tmp/virt.dtb /chosen linux,initrd-start 0x0 $INITRD_ADDR\n\
+fdtput -p -t x /tmp/virt.dtb /chosen linux,initrd-end 0x0 $INITRD_END\n\
+fdtput -p -t s /tmp/virt.dtb /pl061@9030000 status "disabled"\n\
+fdtput -p -t s /tmp/virt.dtb /gpio-keys status "disabled"\n\
+\n\
 echo ""\n\
 echo "Running QEMU test (timeout: ${TIMEOUT}s)..."\n\
 echo ""\n\
 \n\
 timeout $TIMEOUT qemu-system-aarch64 \\\n\
     -nographic \\\n\
-    -machine virt,secure=on,gic-version=3,virtualization=false \\\n\
+    -serial mon:stdio \\\n\
+    -machine virt,secure=on,gic-version=2,virtualization=false \\\n\
     -cpu cortex-a57 \\\n\
     -smp 1 \\\n\
-    -m 1024 \\\n\
+    -m 2048 \\\n\
     -bios /optee/atf/flash.bin \\\n\
-    -device loader,file=/tmp/rootfs_test.cpio.gz,addr=0x44000000 \\\n\
+    -dtb /tmp/virt.dtb \\\n\
+    -device loader,file=/tmp/rootfs_test.cpio.gz,addr=$INITRD_ADDR \\\n\
     -no-reboot 2>&1 || true\n\
 \n\
 rm -rf $WORK_DIR /tmp/rootfs_test.cpio.gz\n\
