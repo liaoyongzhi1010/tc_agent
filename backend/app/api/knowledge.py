@@ -1,10 +1,7 @@
 """知识库管理API"""
-from fastapi import APIRouter, UploadFile, File, HTTPException
-from pathlib import Path
-import shutil
-import tempfile
+from fastapi import APIRouter, HTTPException
 
-from app.schemas.models import AddDocumentRequest, AddDirectoryRequest
+from app.schemas.models import AddDocumentRequest
 from app.infrastructure.logger import get_logger
 from app.infrastructure.vector_store import get_vector_store
 
@@ -27,59 +24,6 @@ async def add_document(body: AddDocumentRequest):
         return {"status": "success", "message": "文档已添加"}
     except Exception as e:
         logger.error("添加文档失败", error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/add-directory")
-async def add_directory(body: AddDirectoryRequest):
-    """扫描目录添加代码文件"""
-    dir_path = Path(body.path)
-    if not dir_path.exists():
-        raise HTTPException(status_code=400, detail="Directory not found")
-
-    logger.info("扫描目录", path=body.path, patterns=body.file_patterns)
-
-    try:
-        vector_store = await get_vector_store()
-        count = await vector_store.add_from_directory(
-            directory=dir_path,
-            collection=body.collection,
-            patterns=body.file_patterns,
-        )
-        return {"status": "success", "documents_added": count}
-    except Exception as e:
-        logger.error("扫描目录失败", error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/upload")
-async def upload_file(file: UploadFile = File(...), collection: str = "text"):
-    """上传文件到知识库"""
-    logger.info("上传文件", filename=file.filename, collection=collection)
-
-    try:
-        # 保存到临时文件
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file.filename) as tmp:
-            shutil.copyfileobj(file.file, tmp)
-            tmp_path = Path(tmp.name)
-
-        # 读取内容
-        content = tmp_path.read_text(encoding="utf-8")
-
-        # 添加到向量存储
-        vector_store = await get_vector_store()
-        await vector_store.add_documents(
-            collection=collection,
-            documents=[content],
-            metadatas=[{"source": file.filename, "filename": file.filename}],
-        )
-
-        # 清理临时文件
-        tmp_path.unlink()
-
-        return {"status": "success", "filename": file.filename}
-    except Exception as e:
-        logger.error("上传文件失败", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 

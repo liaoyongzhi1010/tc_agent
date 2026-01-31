@@ -1,7 +1,9 @@
 """工具注册表"""
-from typing import Dict, List, Optional
+import os
+from typing import Dict, List, Optional, Set
 
 from app.tools.base import BaseTool
+from app.infrastructure.config import settings
 from app.infrastructure.logger import get_logger
 
 logger = get_logger("tc_agent.tools.registry")
@@ -12,7 +14,7 @@ class ToolRegistry:
 
     def __init__(self):
         self._tools: Dict[str, BaseTool] = {}
-        self._categories: Dict[str, List[str]] = {"common": [], "tee": []}
+        self._categories: Dict[str, List[str]] = {}
 
     def register(self, tool: BaseTool, category: str = "common") -> None:
         """注册工具"""
@@ -56,29 +58,28 @@ class ToolRegistry:
 
     def load_all_tools(self) -> None:
         """加载所有内置工具"""
-        # 加载通用工具
-        from app.tools.common.file import FileReadTool, FileWriteTool
-        from app.tools.common.terminal import TerminalTool
+        packs = _parse_tool_packs()
 
-        self.register(FileReadTool(), "common")
-        self.register(FileWriteTool(), "common")
-        self.register(TerminalTool(), "common")
+        if "core" in packs:
+            from app.tools.common.file import FileReadTool, FileWriteTool
+            from app.tools.tee.ta_generator import TAGenerator
+            from app.tools.tee.ca_generator import CAGenerator
+            from app.tools.tee.crypto import CryptoHelper
 
-        # 加载TEE工具
-        from app.tools.tee.ta_generator import TAGenerator
-        from app.tools.tee.ca_generator import CAGenerator
-        from app.tools.tee.crypto import CryptoHelper
-        from app.tools.tee.docker_build import DockerBuildTool
-        from app.tools.tee.ta_validate import TAValidateTool
-        from app.tools.tee.qemu_run import QemuRunTool
-        from app.tools.tee.workflow_runner import WorkflowRunner
+            self.register(FileReadTool(), "core")
+            self.register(FileWriteTool(), "core")
+            self.register(TAGenerator(), "core")
+            self.register(CAGenerator(), "core")
+            self.register(CryptoHelper(), "core")
 
-        self.register(TAGenerator(), "tee")
-        self.register(CAGenerator(), "tee")
-        self.register(CryptoHelper(), "tee")
-        self.register(DockerBuildTool(), "tee")
-        self.register(TAValidateTool(), "tee")
-        self.register(QemuRunTool(), "tee")
-        self.register(WorkflowRunner(), "tee")
+        if "runner" in packs:
+            from app.tools.tee.optee_runner import OpteeRunnerTool
 
-        logger.info("工具加载完成", total=len(self._tools))
+            self.register(OpteeRunnerTool(), "runner")
+
+        logger.info("工具加载完成", total=len(self._tools), packs=list(packs))
+
+
+def _parse_tool_packs() -> Set[str]:
+    raw = os.getenv("TC_AGENT_TOOL_PACKS") or settings.tool_packs or "core"
+    return {p.strip() for p in raw.split(",") if p.strip()}

@@ -52,7 +52,7 @@ class WorkflowManager:
 
         try:
             response = await self.llm.generate(prompt)
-            steps = self._parse_workflow_response(response)
+            steps = self._parse_workflow_response(response, task)
         except Exception as e:
             logger.error("LLM生成失败", error=str(e))
             # 返回默认workflow
@@ -85,7 +85,7 @@ class WorkflowManager:
 
         try:
             response = await self.llm.generate(prompt)
-            new_steps = self._parse_workflow_response(response)
+            new_steps = self._parse_workflow_response(response, workflow.task)
             workflow.steps = new_steps
         except Exception as e:
             logger.error("修改workflow失败", error=str(e))
@@ -93,9 +93,19 @@ class WorkflowManager:
 
         return workflow
 
-    def _parse_workflow_response(self, response: str) -> List[WorkflowStep]:
+    def _parse_workflow_response(self, response: str, task: str) -> List[WorkflowStep]:
         """解析LLM返回的workflow"""
         try:
+            def _need_run_verify(text: str) -> bool:
+                keywords = ("运行", "QEMU", "验证", "测试", "执行")
+                return any(k.lower() in text.lower() for k in keywords)
+
+            def _build_desc(item: dict) -> str:
+                desc = (item.get("description") or "").strip()
+                if desc:
+                    return desc
+                return (item.get("details") or "").strip()
+
             # 尝试提取JSON块
             json_match = re.search(r"```json\s*(.*?)\s*```", response, re.DOTALL)
             if json_match:
@@ -107,27 +117,55 @@ class WorkflowManager:
             data = json.loads(json_str)
             steps = []
             for item in data.get("steps", []):
+                description = _build_desc(item)
                 step = WorkflowStep(
                     id=str(item.get("id", len(steps) + 1)),
-                    description=item.get("description", ""),
+                    description=description,
                     status="pending",
                 )
                 steps.append(step)
 
-            if not steps:
+            run_verify = _need_run_verify(task or "")
+            if not steps or len(steps) < 3:
                 raise ValueError("No steps parsed")
+
+            if run_verify and len(steps) >= 4:
+                last = steps[-1].description or ""
+                prev = steps[-2].description or ""
+                if ("验证" in last and "运行" in prev) or ("验证" in last and "QEMU" in prev):
+                    steps = steps[:-1]
+
+            if len(steps) >= 2:
+                first = steps[0].description or ""
+                second = steps[1].description or ""
+                if ("创建" in first and "目录" in first) and ("生成" in second and "模板" in second):
+                    steps = [WorkflowStep(id="1", description="生成TA/CA模板")] + steps[2:]
+                    for idx, step in enumerate(steps, start=1):
+                        step.id = str(idx)
 
             return steps
 
         except Exception as e:
             logger.warning("解析workflow失败，使用默认", error=str(e))
-            return self._get_default_steps("")
+            return self._get_default_steps(task)
 
     def _get_default_steps(self, task: str) -> List[WorkflowStep]:
-        """返回默认工作流步骤"""
-        default_steps = [
-            WorkflowStep(id="1", description="创建TA/CA项目结构（仅一次）"),
-            WorkflowStep(id="2", description="实现核心加密逻辑并完善接口"),
-            WorkflowStep(id="3", description="编译并进行基础验证"),
+        """返回默认工作流步骤（保证>=3步）"""
+        def _need_run_verify(text: str) -> bool:
+            keywords = ("运行", "QEMU", "验证", "测试", "执行")
+            return any(k.lower() in text.lower() for k in keywords)
+
+        run_verify = _need_run_verify(task or "")
+        if run_verify:
+            return [
+                WorkflowStep(id="1", description="生成TA/CA模板（单目录）"),
+                WorkflowStep(id="2", description="补全TA/CA逻辑与接口"),
+                WorkflowStep(id="3", description="optee_runner编译（build）"),
+                WorkflowStep(id="4", description="optee_runner运行QEMU验证（full）"),
+            ]
+
+        return [
+            WorkflowStep(id="1", description="生成TA/CA模板（单目录）"),
+            WorkflowStep(id="2", description="补全TA/CA逻辑与接口"),
+            WorkflowStep(id="3", description="编译验证（build）"),
         ]
-        return default_steps

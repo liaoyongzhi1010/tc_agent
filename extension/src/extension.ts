@@ -4,6 +4,8 @@
  */
 
 import * as vscode from 'vscode';
+import * as path from 'path';
+import { TextDecoder } from 'util';
 import { BackendManager } from './services/BackendManager';
 import { MainViewProvider } from './views/MainViewProvider';
 
@@ -12,8 +14,8 @@ let backendManager: BackendManager;
 export async function activate(context: vscode.ExtensionContext) {
     console.log('TC Agent is activating...');
 
-    // 启动Python后端
-    backendManager = new BackendManager(context);
+    // 后端配置
+    backendManager = new BackendManager();
 
     // 注册主视图
     const mainViewProvider = new MainViewProvider(context, backendManager);
@@ -66,6 +68,8 @@ export async function activate(context: vscode.ExtensionContext) {
                     return;
                 }
 
+                const baseUrl = backendManager.getBaseUrl();
+
                 // 选择知识库类型
                 const collectionType = await vscode.window.showQuickPick(
                     [
@@ -79,22 +83,38 @@ export async function activate(context: vscode.ExtensionContext) {
                     return;
                 }
 
-                // 调用后端API添加文件
-                const baseUrl = backendManager.getBaseUrl();
-                const response = await fetch(`${baseUrl}/knowledge/add-directory`, {
+                const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(filePath));
+                const maxSize = 1024 * 1024;
+                if (bytes.byteLength > maxSize) {
+                    vscode.window.showWarningMessage('文件过大(>1MB)，请拆分后再添加');
+                    return;
+                }
+
+                const content = new TextDecoder('utf-8').decode(bytes);
+                if (!content.trim()) {
+                    vscode.window.showWarningMessage('文件内容为空，无法添加');
+                    return;
+                }
+
+                const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                const relative = workspaceRoot ? vscode.workspace.asRelativePath(filePath) : filePath;
+
+                const response = await fetch(`${baseUrl}/knowledge/add-document`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        path: filePath,
+                        content,
                         collection: collectionType.value,
-                        file_patterns: ['*']
+                        metadata: {
+                            source: relative,
+                            filename: path.basename(filePath)
+                        }
                     })
                 });
 
                 if (response.ok) {
-                    const data = await response.json() as { documents_added?: number };
                     vscode.window.showInformationMessage(
-                        `已添加到${collectionType.label}，共 ${data.documents_added || 1} 个文档`
+                        `已添加到${collectionType.label}`
                     );
                 } else {
                     throw new Error(`API请求失败: ${response.statusText}`);
@@ -105,19 +125,13 @@ export async function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // 自动启动后端（测试环境可禁用）
-    if (process.env.TC_AGENT_DISABLE_BACKEND_AUTO_START === '1') {
-        console.log('TC Agent backend auto-start disabled');
-    } else {
-        try {
-            await backendManager.start();
-            console.log('TC Agent backend started');
-        } catch (error) {
-            console.error('Failed to start backend:', error);
-            vscode.window.showWarningMessage(
-                'TC Agent 后端启动失败，请检查Python环境配置'
-            );
-        }
+    // 不再自动启动后端：由用户配置 backendUrl
+    const config = vscode.workspace.getConfiguration('tcAgent');
+    const backendUrl = (config.get<string>('backendUrl') || '').trim();
+    if (!backendUrl) {
+        vscode.window.showWarningMessage(
+            '未配置 TC Agent 后端地址，请在设置中填写 tcAgent.backendUrl'
+        );
     }
 
     console.log('TC Agent is now active!');
@@ -125,5 +139,4 @@ export async function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {
     console.log('TC Agent is deactivating...');
-    backendManager?.stop();
 }

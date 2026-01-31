@@ -1,3 +1,4 @@
+"""生成器覆盖行为测试。"""
 import asyncio
 from pathlib import Path
 
@@ -8,6 +9,7 @@ UUID = "12345678-1234-5678-1234-567812345678"
 
 
 def test_ta_generator_overwrite_false_blocks(tmp_path: Path):
+    # overwrite=False 时禁止覆盖
     gen = TAGenerator()
     res1 = asyncio.run(gen.execute(name="demo", output_dir=str(tmp_path), ta_uuid=UUID))
     assert res1.success is True
@@ -25,6 +27,7 @@ def test_ta_generator_overwrite_false_blocks(tmp_path: Path):
 
 
 def test_ta_generator_overwrite_true_rewrites(tmp_path: Path):
+    # overwrite=True 时允许覆盖并恢复模板内容
     gen = TAGenerator()
     res1 = asyncio.run(gen.execute(name="demo", output_dir=str(tmp_path), ta_uuid=UUID))
     assert res1.success is True
@@ -46,6 +49,7 @@ def test_ta_generator_overwrite_true_rewrites(tmp_path: Path):
 
 
 def test_ca_generator_overwrite_false_blocks(tmp_path: Path):
+    # overwrite=False 时禁止覆盖
     gen = CAGenerator()
     res1 = asyncio.run(gen.execute(name="demo", ta_name="demo", output_dir=str(tmp_path)))
     assert res1.success is True
@@ -63,6 +67,7 @@ def test_ca_generator_overwrite_false_blocks(tmp_path: Path):
 
 
 def test_ca_generator_overwrite_true_rewrites(tmp_path: Path):
+    # overwrite=True 时允许覆盖并恢复模板内容
     gen = CAGenerator()
     res1 = asyncio.run(gen.execute(name="demo", ta_name="demo", output_dir=str(tmp_path)))
     assert res1.success is True

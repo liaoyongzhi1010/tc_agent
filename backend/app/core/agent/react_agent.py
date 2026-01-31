@@ -1,20 +1,24 @@
 """ReAct Agent实现"""
 import asyncio
+import os
 import traceback
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Callable, Awaitable
 from dataclasses import dataclass, field
 
 from app.core.llm.base import BaseLLM
 from app.core.agent.prompts import REACT_SYSTEM_PROMPT, REACT_STEP_PROMPT
 from app.core.agent.parser import AgentOutputParser, Action, FinalAnswer
+from app.core.agent.step_policy import StepPolicy, StepKind
 from app.tools.registry import ToolRegistry
-from app.schemas.models import AgentEvent, Workflow, WorkflowStep
+from app.schemas.models import AgentEvent, Workflow, WorkflowStep, ToolResult
 from app.infrastructure.logger import get_logger
+from app.infrastructure.config import settings
+from app.infrastructure.workspace import apply_file_ops
 
 logger = get_logger("tc_agent.agent.react")
 
-MAX_ITERATIONS = 10  # 最大迭代次数，防止无限循环
+MAX_ITERATIONS = settings.agent_max_iterations  # 最大迭代次数，防止无限循环
 
 
 @dataclass
@@ -29,6 +33,10 @@ class AgentContext:
     project_name: Optional[str] = None
     ta_dir: Optional[str] = None
     ca_dir: Optional[str] = None
+    workspace_id: Optional[str] = None
+    file_reader: Optional[Callable[[str, str], Awaitable[ToolResult]]] = None
+    runner_build_done: bool = False
+    runner_full_done: bool = False
 
 
 class ReActAgent:
@@ -38,37 +46,26 @@ class ReActAgent:
         self.llm = llm
         self.tools = tools
         self.parser = AgentOutputParser()
-
-    def _ensure_workspace_writable(self, workspace_root: Optional[str]) -> Optional[str]:
-        if not workspace_root:
-            return "缺少工作区路径，请先打开一个工作区文件夹"
-
-        try:
-            root = Path(workspace_root).expanduser().resolve()
-            root.mkdir(parents=True, exist_ok=True)
-            probe = root / ".tc_agent_write_test"
-            probe.write_text("ok", encoding="utf-8")
-            probe.unlink(missing_ok=True)
-            return None
-        except Exception as exc:
-            return f"工作区不可写: {workspace_root} ({exc})"
+        self.step_policy = StepPolicy()
 
     async def run(
         self,
         task: str,
         workflow: Optional[Workflow] = None,
         workspace_root: Optional[str] = None,
+        file_reader: Optional[Callable[[str, str], Awaitable[ToolResult]]] = None,
         cancel_event: Optional[asyncio.Event] = None,
     ) -> AsyncIterator[AgentEvent]:
         """执行任务，返回事件流"""
         logger.info("Agent开始执行", task=task[:50], workspace=workspace_root)
 
-        ctx = AgentContext(task=task, workflow=workflow, workspace_root=workspace_root)
-
-        workspace_error = self._ensure_workspace_writable(ctx.workspace_root)
-        if workspace_error:
-            yield AgentEvent(type="error", data={"message": workspace_error})
-            return
+        ctx = AgentContext(
+            task=task,
+            workflow=workflow,
+            workspace_root=workspace_root,
+            workspace_id=workflow.workspace_id if workflow else None,
+            file_reader=file_reader,
+        )
 
         if not workflow or not workflow.steps:
             yield AgentEvent(type="error", data={"message": "缺少工作流，无法执行"})
@@ -88,10 +85,24 @@ class ReActAgent:
                 data={"step_index": i, "step": step.model_dump()},
             )
 
-            async for event in self._execute_step(ctx, step, cancel_event):
-                yield event
-                if event.type == "cancelled":
-                    return
+            step_kind = self.step_policy.classify(step.description)
+            if step_kind == StepKind.GENERATE and not self._has_tool("ta_generator"):
+                step_kind = StepKind.GENERIC
+            if step_kind == StepKind.GENERATE:
+                async for event in self._auto_generate(ctx, step, cancel_event):
+                    yield event
+                    if event.type == "cancelled":
+                        return
+            elif step_kind in (StepKind.BUILD, StepKind.RUN):
+                async for event in self._auto_run_runner(ctx, step, step_kind, cancel_event):
+                    yield event
+                    if event.type == "cancelled":
+                        return
+            else:
+                async for event in self._execute_step(ctx, step, step_kind, cancel_event):
+                    yield event
+                    if event.type == "cancelled":
+                        return
 
             yield AgentEvent(type="step_complete", data={"step_index": i})
 
@@ -100,10 +111,13 @@ class ReActAgent:
         )
 
     async def _execute_step(
-        self, ctx: AgentContext, step: WorkflowStep, cancel_event: Optional[asyncio.Event]
+        self,
+        ctx: AgentContext,
+        step: WorkflowStep,
+        step_kind: StepKind,
+        cancel_event: Optional[asyncio.Event],
     ) -> AsyncIterator[AgentEvent]:
         """执行单个workflow步骤"""
-        step_task = f"{ctx.task}\n\n当前步骤: {step.description}"
 
         while ctx.iteration < MAX_ITERATIONS:
             if cancel_event and cancel_event.is_set():
@@ -113,7 +127,7 @@ class ReActAgent:
             ctx.iteration += 1
 
             # 构建prompt
-            prompt = self._build_step_prompt(ctx, step)
+            prompt = self._build_step_prompt(ctx, step, step_kind)
 
             # 调用LLM
             try:
@@ -142,32 +156,27 @@ class ReActAgent:
                 normalized_input = self._normalize_tool_input(
                     result.tool, result.input, ctx
                 )
-                if result.tool in ("ta_generator", "ca_generator"):
-                    skip_message = self._maybe_skip_generator(result.tool, ctx)
-                    if skip_message:
-                        yield AgentEvent(
-                            type="observation",
-                            data={"content": skip_message},
-                        )
-                        ctx.history.append({"type": "observation", "content": skip_message})
-                        continue
-                    if self._already_attempted_tool(ctx.history, result.tool):
-                        message = (
-                            f"{result.tool} 已在本步骤尝试过，若失败请检查工作区权限或手动修复后重试。"
-                        )
-                        yield AgentEvent(type="observation", data={"content": message})
-                        ctx.history.append({"type": "observation", "content": message})
-                        continue
+                allowed = set(self.step_policy.allowed_tools(step_kind))
+                if allowed and result.tool not in allowed:
+                    message = f"本步骤只允许工具: {', '.join(sorted(allowed))}"
+                    yield AgentEvent(type="observation", data={"content": message})
+                    ctx.history.append({"type": "observation", "content": message})
+                    return
                 yield AgentEvent(
                     type="action",
                     data={"tool": result.tool, "input": normalized_input},
                 )
 
                 # 执行工具
-                observation = await self._execute_tool(
+                observation, file_ops, success = await self._execute_tool(
                     result.tool, normalized_input, ctx, cancel_event
                 )
-                yield AgentEvent(type="observation", data={"content": observation})
+                if file_ops:
+                    yield AgentEvent(type="file_ops", data={"ops": file_ops})
+                obs_data = {"content": observation, "tool": result.tool}
+                if success is not None:
+                    obs_data["success"] = success
+                yield AgentEvent(type="observation", data=obs_data)
                 if cancel_event and cancel_event.is_set():
                     yield AgentEvent(type="cancelled", data={"message": "已取消"})
                     return
@@ -187,6 +196,86 @@ class ReActAgent:
                 data={"message": f"步骤 {step.id} 达到最大迭代次数"},
             )
 
+    async def _auto_generate(
+        self,
+        ctx: AgentContext,
+        step: WorkflowStep,
+        cancel_event: Optional[asyncio.Event],
+    ) -> AsyncIterator[AgentEvent]:
+        if ctx.ta_dir and ctx.ca_dir:
+            yield AgentEvent(type="observation", data={"content": "已存在 TA/CA 目录，跳过生成。"})
+            return
+        name = ctx.project_name or self._guess_project_name(ctx.task)
+        ctx.project_name = name
+
+        if not ctx.ta_dir:
+            ta_input = self._normalize_tool_input(
+                "ta_generator",
+                {"name": name, "output_dir": ctx.workspace_root, "overwrite": True},
+                ctx,
+            )
+            yield AgentEvent(type="action", data={"tool": "ta_generator", "input": ta_input})
+            obs, file_ops, success = await self._execute_tool("ta_generator", ta_input, ctx, cancel_event)
+            if file_ops:
+                yield AgentEvent(type="file_ops", data={"ops": file_ops})
+            obs_data = {"content": obs, "tool": "ta_generator"}
+            if success is not None:
+                obs_data["success"] = success
+            yield AgentEvent(type="observation", data=obs_data)
+
+        if not ctx.ca_dir:
+            ca_input = self._normalize_tool_input(
+                "ca_generator",
+                {"name": name, "ta_name": name, "output_dir": ctx.workspace_root, "overwrite": True},
+                ctx,
+            )
+            yield AgentEvent(type="action", data={"tool": "ca_generator", "input": ca_input})
+            obs, file_ops, success = await self._execute_tool("ca_generator", ca_input, ctx, cancel_event)
+            if file_ops:
+                yield AgentEvent(type="file_ops", data={"ops": file_ops})
+            obs_data = {"content": obs, "tool": "ca_generator"}
+            if success is not None:
+                obs_data["success"] = success
+            yield AgentEvent(type="observation", data=obs_data)
+
+    async def _auto_run_runner(
+        self,
+        ctx: AgentContext,
+        step: WorkflowStep,
+        step_kind: StepKind,
+        cancel_event: Optional[asyncio.Event],
+    ) -> AsyncIterator[AgentEvent]:
+        if not self._has_tool("optee_runner"):
+            yield AgentEvent(type="observation", data={"content": "optee_runner 不可用，跳过编译/运行。"})
+            return
+        if not ctx.ta_dir or not ctx.ca_dir:
+            yield AgentEvent(type="observation", data={"content": "缺少 TA/CA 目录，无法运行。"})
+            return
+
+        if step_kind == StepKind.BUILD and ctx.runner_build_done:
+            yield AgentEvent(type="observation", data={"content": "已编译，跳过重复编译。"})
+            return
+        if step_kind == StepKind.RUN and ctx.runner_full_done:
+            yield AgentEvent(type="observation", data={"content": "已完成运行验证，跳过重复运行。"})
+            return
+
+        mode = self.step_policy.runner_mode(step_kind, ctx.runner_build_done) or "full"
+        input_payload = {
+            "workspace_id": ctx.workspace_id,
+            "ta_dir": ctx.ta_dir,
+            "ca_dir": ctx.ca_dir,
+            "mode": mode,
+        }
+        runner_input = self._normalize_tool_input("optee_runner", input_payload, ctx)
+        yield AgentEvent(type="action", data={"tool": "optee_runner", "input": runner_input})
+        obs, file_ops, success = await self._execute_tool("optee_runner", runner_input, ctx, cancel_event)
+        if file_ops:
+            yield AgentEvent(type="file_ops", data={"ops": file_ops})
+        obs_data = {"content": obs, "tool": "optee_runner"}
+        if success is not None:
+            obs_data["success"] = success
+        yield AgentEvent(type="observation", data=obs_data)
+
     def _normalize_tool_input(
         self,
         tool: str,
@@ -197,59 +286,52 @@ class ReActAgent:
         if not workspace_root or not isinstance(tool_input, dict):
             return tool_input
 
-        root = Path(workspace_root).expanduser().resolve()
-        normalized = dict(tool_input)
-        dir_keys = {"output_dir", "source_dir", "ta_dir", "ca_dir", "cwd"}
-        file_keys = {"path", "ta_path", "ca_file"}
-
-        def coerce_path(value: str, is_dir: bool) -> str:
-            try:
-                path = Path(value).expanduser()
-                if not path.is_absolute():
-                    path = (root / path).resolve()
-                else:
-                    resolved = path.resolve()
-                    try:
-                        is_inside = resolved.is_relative_to(root)
-                    except AttributeError:
-                        is_inside = resolved == root or root in resolved.parents
-                    if not is_inside:
-                        if is_dir:
-                            return str((root / resolved.name).resolve())
-                        return str((root / resolved.name).resolve())
-                return str(path)
-            except Exception:
-                return value
-
-        for key in dir_keys:
-            value = normalized.get(key)
-            if isinstance(value, str):
-                new_value = coerce_path(value, is_dir=True)
-                if new_value != value:
-                    logger.warning("路径已重写为工作区内", tool=tool, key=key, src=value, dest=new_value)
-                    normalized[key] = new_value
-
-        for key in file_keys:
-            value = normalized.get(key)
-            if isinstance(value, str):
-                new_value = coerce_path(value, is_dir=False)
-                if new_value != value:
-                    logger.warning("路径已重写为工作区内", tool=tool, key=key, src=value, dest=new_value)
-                    normalized[key] = new_value
+        if tool in ("file_read", "file_write", "crypto_helper"):
+            return tool_input
 
         if tool in ("ta_generator", "ca_generator"):
-            if "output_dir" not in normalized or not normalized.get("output_dir"):
-                normalized["output_dir"] = str(root)
+            normalized = dict(tool_input)
+            def _normalize_name(name: Optional[str]) -> Optional[str]:
+                if not name:
+                    return name
+                for suffix in ("_ta", "_ca"):
+                    if name.endswith(suffix):
+                        name = name[: -len(suffix)]
+                return name
+
+            def _normalize_output_dir(path: Optional[str], name: Optional[str]) -> str:
+                if not path:
+                    return workspace_root
+                try:
+                    p = Path(path)
+                except Exception:
+                    return workspace_root
+                base = p.name
+                name_base = name or ""
+                if base in {name_base, f"{name_base}_ta", f"{name_base}_ca"} or base.endswith(("_ta", "_ca")):
+                    if workspace_root and Path(workspace_root) in p.parents:
+                        return workspace_root
+                return path
+
+            normalized["output_dir"] = _normalize_output_dir(
+                normalized.get("output_dir"), normalized.get("name")
+            )
 
             if tool == "ta_generator":
-                name = normalized.get("name")
+                name = _normalize_name(normalized.get("name"))
+                if name:
+                    normalized["name"] = name
                 if ctx.project_name and name and name != ctx.project_name:
                     normalized["name"] = ctx.project_name
                 elif name and not ctx.project_name:
                     ctx.project_name = name
             if tool == "ca_generator":
-                name = normalized.get("name")
-                ta_name = normalized.get("ta_name")
+                name = _normalize_name(normalized.get("name"))
+                ta_name = _normalize_name(normalized.get("ta_name"))
+                if name:
+                    normalized["name"] = name
+                if ta_name:
+                    normalized["ta_name"] = ta_name
                 if ctx.project_name:
                     if name and name != ctx.project_name:
                         normalized["name"] = ctx.project_name
@@ -260,35 +342,44 @@ class ReActAgent:
                 elif ta_name:
                     ctx.project_name = ta_name
 
-        if tool == "workflow_runner":
+            return normalized
+
+        if tool == "optee_runner":
+            normalized = dict(tool_input)
+            if ctx.workspace_id:
+                normalized["workspace_id"] = ctx.workspace_id
             if ctx.ta_dir and not normalized.get("ta_dir"):
                 normalized["ta_dir"] = ctx.ta_dir
-            if ctx.ca_dir and (
-                not normalized.get("ca_dir") or normalized.get("ca_dir") == str(root)
-            ):
+            if ctx.ca_dir and not normalized.get("ca_dir"):
                 normalized["ca_dir"] = ctx.ca_dir
 
-        if tool == "docker_build":
-            build_type = normalized.get("build_type")
-            if build_type == "ta" and ctx.ta_dir and not normalized.get("source_dir"):
-                normalized["source_dir"] = ctx.ta_dir
-            if build_type == "ca" and ctx.ca_dir and not normalized.get("source_dir"):
-                normalized["source_dir"] = ctx.ca_dir
+            def _rel_if_under_workspace(path: Optional[str]) -> Optional[str]:
+                if not path or not ctx.workspace_root:
+                    return path
+                try:
+                    if os.path.isabs(path):
+                        rel = os.path.relpath(path, ctx.workspace_root)
+                        if not rel.startswith(".."):
+                            return rel
+                except Exception:
+                    return path
+                return path
 
-        return normalized
+            normalized["ta_dir"] = _rel_if_under_workspace(normalized.get("ta_dir"))
+            normalized["ca_dir"] = _rel_if_under_workspace(normalized.get("ca_dir"))
+            normalized["ca_bin"] = _rel_if_under_workspace(normalized.get("ca_bin"))
+            return normalized
 
-    def _already_attempted_tool(self, history: List[dict], tool_name: str) -> bool:
-        for item in history:
-            if item.get("type") == "action" and item.get("tool") == tool_name:
-                return True
-        return False
+        return tool_input
 
-    def _maybe_skip_generator(self, tool_name: str, ctx: AgentContext) -> Optional[str]:
-        if tool_name == "ta_generator" and ctx.ta_dir:
-            return f"TA 已生成在 {ctx.ta_dir}，跳过重复生成。"
-        if tool_name == "ca_generator" and ctx.ca_dir:
-            return f"CA 已生成在 {ctx.ca_dir}，跳过重复生成。"
-        return None
+    def _guess_project_name(self, task: str) -> str:
+        text = task or ""
+        if "HELLO" in text.upper():
+            return "hello"
+        for token in text.replace("，", " ").replace(",", " ").split():
+            if token.isidentifier():
+                return token.lower()
+        return "ta_app"
 
     async def _execute_tool(
         self,
@@ -296,26 +387,65 @@ class ReActAgent:
         tool_input: Dict[str, Any],
         ctx: AgentContext,
         cancel_event: Optional[asyncio.Event],
-    ) -> str:
+    ) -> Tuple[str, Optional[List[Dict[str, Any]]], Optional[bool]]:
         """执行工具并返回观察结果"""
         if tool_input.get("__parse_error"):
             raw = tool_input.get("__raw_input", "")
             return (
                 "输入格式错误: 需要提供有效的JSON对象，键名必须与工具参数名一致。"
                 f" 原始输入: {raw}"
-            )
+            ), None, False
 
         if cancel_event and cancel_event.is_set():
-            return "已取消"
+            return "已取消", None, False
 
         tool = self.tools.get_tool(tool_name)
 
         if not tool:
-            return f"错误: 工具 '{tool_name}' 不存在。可用工具: {[t.name for t in self.tools.get_all_tools()]}"
+            return (
+                f"错误: 工具 '{tool_name}' 不存在。可用工具: {[t.name for t in self.tools.get_all_tools()]}",
+                None,
+                False,
+            )
 
         try:
+            if tool_name == "file_read":
+                if not ctx.file_reader:
+                    return "执行失败: file_read 仅支持前端执行", None, False
+                path = tool_input.get("path") if isinstance(tool_input, dict) else None
+                encoding = tool_input.get("encoding", "utf-8") if isinstance(tool_input, dict) else "utf-8"
+                if not path:
+                    return "执行失败: 缺少path", None, False
+                result = await ctx.file_reader(path, encoding)
+                if result.success:
+                    return str(result.data) if result.data else "执行成功", None, True
+                return f"执行失败: {result.error}", None, False
+
+            if tool_name == "file_write":
+                path = tool_input.get("path")
+                content = tool_input.get("content", "")
+                if path and path.endswith("_ta.c"):
+                    if "TA_InvokeCommandEntryPoint" not in content or "TA_CreateEntryPoint" not in content:
+                        return "拒绝写入：TA 源文件必须保留 OP-TEE 入口函数。", None, False
+                file_ops = [
+                    {
+                        "path": tool_input.get("path"),
+                        "content": tool_input.get("content", ""),
+                        "encoding": tool_input.get("encoding", "utf-8"),
+                        "create_dirs": tool_input.get("create_dirs", True),
+                    }
+                ]
+                if ctx.workspace_id:
+                    apply_file_ops(ctx.workspace_id, ctx.workspace_root or "", file_ops)
+                return f"已提交文件写入（前端执行）：{tool_input.get('path')}", file_ops, True
+
+            if tool_name in ("ta_generator", "ca_generator"):
+                tool_input = {**tool_input, "emit_files": True}
+
             result = await tool.execute(**tool_input, cancel_event=cancel_event)
+            file_ops: Optional[List[Dict[str, Any]]] = None
             if result.success and isinstance(result.data, dict):
+                file_ops = result.data.pop("file_ops", None)
                 if tool_name == "ta_generator":
                     output_dir = result.data.get("output_dir")
                     if output_dir:
@@ -324,30 +454,68 @@ class ReActAgent:
                     output_dir = result.data.get("output_dir")
                     if output_dir:
                         ctx.ca_dir = output_dir
+                if tool_name == "optee_runner":
+                    mode = tool_input.get("mode")
+                    if mode == "build":
+                        ctx.runner_build_done = True
+                    elif mode == "test":
+                        ctx.runner_full_done = True
+                    elif mode == "full":
+                        ctx.runner_build_done = True
+                        ctx.runner_full_done = True
             if result.success:
-                return str(result.data) if result.data else "执行成功"
+                if file_ops and ctx.workspace_id:
+                    apply_file_ops(ctx.workspace_id, ctx.workspace_root or "", file_ops)
+                if tool_name == "optee_runner" and isinstance(result.data, dict):
+                    log = result.data.get("log")
+                    if log:
+                        return f"执行成功\n日志:\n{log}", file_ops, True
+                return (str(result.data) if result.data else "执行成功"), file_ops, True
             else:
-                return f"执行失败: {result.error}"
+                details: List[str] = []
+                if isinstance(result.data, dict):
+                    log = result.data.get("log")
+                    if log:
+                        details.append(f"日志:\n{log}")
+                    exit_code = result.data.get("exit_code")
+                    if exit_code is not None:
+                        details.append(f"退出码: {exit_code}")
+                message = f"执行失败: {result.error}" if result.error else "执行失败"
+                if details:
+                    message += "\n" + "\n".join(details)
+                return message, None, False
         except Exception as e:
             logger.error("工具执行异常", tool=tool_name, input=tool_input, error=str(e), tb=traceback.format_exc())
-            return f"执行异常: {str(e)}"
+            return f"执行异常: {str(e)}", None, False
 
-    def _build_step_prompt(self, ctx: AgentContext, step: WorkflowStep) -> str:
+    def _build_step_prompt(self, ctx: AgentContext, step: WorkflowStep, step_kind: StepKind) -> str:
         """构建步骤执行prompt"""
         tools_desc = self.tools.get_tools_prompt()
         system = REACT_SYSTEM_PROMPT.format(tools_description=tools_desc)
 
         history_str = self._format_history(ctx.history)
         workspace = ctx.workspace_root or "/tmp"
+        ta_dir = ctx.ta_dir or "（未生成）"
+        ca_dir = ctx.ca_dir or "（未生成）"
+        allowed_tools = self.step_policy.allowed_tools(step_kind)
+        allowed_text = ", ".join(allowed_tools) if allowed_tools else "（无）"
+        extra_context = "实现步骤优先修改 TA 的 process_command，保留 TA 入口函数。" if step_kind == StepKind.IMPLEMENT else "（无）"
 
         step_prompt = REACT_STEP_PROMPT.format(
             workspace_root=workspace,
             task=ctx.task,
             current_step=f"{step.id}. {step.description}",
+            ta_dir=ta_dir,
+            ca_dir=ca_dir,
+            allowed_tools=allowed_text,
             history=history_str or "（无历史记录）",
+            extra_context=extra_context,
         )
 
         return f"{system}\n\n{step_prompt}"
+
+    def _has_tool(self, name: str) -> bool:
+        return self.tools.get_tool(name) is not None
 
     def _format_history(self, history: List[dict]) -> str:
         """格式化历史记录"""

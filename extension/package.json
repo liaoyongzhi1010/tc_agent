@@ -67,15 +67,10 @@
     "configuration": {
       "title": "TC Agent",
       "properties": {
-        "tcAgent.pythonPath": {
+        "tcAgent.backendUrl": {
           "type": "string",
-          "default": "python3",
-          "description": "Python解释器路径"
-        },
-        "tcAgent.backendPort": {
-          "type": "number",
-          "default": 8765,
-          "description": "后端服务端口"
+          "default": "",
+          "description": "后端服务地址(例如 http://127.0.0.1:8000)，配置后将不再自动启动本地后端"
         },
         "tcAgent.llm.provider": {
           "type": "string",
@@ -134,11 +129,6 @@
           "type": "string",
           "default": "BAAI/bge-small-zh-v1.5",
           "description": "本地Embedding模型名称"
-        },
-        "tcAgent.knowledge.presetEnabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "启用预置知识库"
         }
       }
     },
@@ -160,11 +150,13 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
-    "compile": "webpack",
+    "compile": "npm run webview:build && webpack",
     "watch": "webpack --watch",
-    "package": "webpack --mode production --devtool hidden-source-map",
+    "package": "npm run webview:build && webpack --mode production --devtool hidden-source-map",
     "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js"
+    "test": "node ./out/test/runTest.js",
+    "webview:build": "esbuild webview/mainView.ts --bundle --format=iife --outfile=media/mainView.js --target=es2020",
+    "webview:watch": "esbuild webview/mainView.ts --bundle --format=iife --outfile=media/mainView.js --target=es2020 --watch"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
@@ -175,7 +167,8 @@
     "ts-loader": "^9.5.1",
     "typescript": "^5.3.3",
     "webpack": "^5.89.0",
-    "webpack-cli": "^5.1.4"
+    "webpack-cli": "^5.1.4",
+    "esbuild": "^0.20.2"
   },
   "dependencies": {
     "eventsource": "^2.0.2"

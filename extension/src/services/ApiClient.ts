@@ -23,6 +23,16 @@ export interface PlanResponse {
     steps: PlanStep[];
 }
 
+export interface WorkspaceInitResponse {
+    workspace_id: string;
+}
+
+export interface WorkspaceFile {
+    path: string;
+    content: string;
+    encoding?: string;
+}
+
 export class ApiClient {
     constructor(private backendManager: BackendManager) {}
 
@@ -70,11 +80,11 @@ export class ApiClient {
         }
     }
 
-    async initPlan(task: string, workspaceRoot?: string): Promise<PlanResponse> {
+    async initPlan(task: string, workspaceRoot?: string, workspaceId?: string): Promise<PlanResponse> {
         const response = await fetch(`${this.getBaseUrl()}/plan/init`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ task, workspace_root: workspaceRoot })
+            body: JSON.stringify({ task, workspace_root: workspaceRoot, workspace_id: workspaceId })
         });
 
         if (!response.ok) {
@@ -82,6 +92,31 @@ export class ApiClient {
         }
 
         return response.json() as Promise<PlanResponse>;
+    }
+
+    async initWorkspace(): Promise<WorkspaceInitResponse> {
+        const response = await fetch(`${this.getBaseUrl()}/workspace/init`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        if (!response.ok) {
+            throw new Error(`Init workspace failed: ${response.statusText}`);
+        }
+
+        return response.json() as Promise<WorkspaceInitResponse>;
+    }
+
+    async syncWorkspace(workspaceId: string, files: WorkspaceFile[]): Promise<void> {
+        const response = await fetch(`${this.getBaseUrl()}/workspace/sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ workspace_id: workspaceId, files })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Sync workspace failed: ${response.statusText}`);
+        }
     }
 
     async refinePlan(workflowId: string, instruction: string): Promise<PlanResponse> {

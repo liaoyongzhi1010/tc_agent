@@ -8,15 +8,13 @@ from app.schemas.models import (
     Workflow,
 )
 from app.infrastructure.logger import get_logger
+from app.infrastructure.workflow_store import get_workflow_store
 from app.infrastructure.vector_store import get_vector_store
 from app.core.llm import LLMFactory
 from app.core.workflow import WorkflowManager
 
 router = APIRouter()
 logger = get_logger("tc_agent.api.plan")
-
-# 内存存储workflow(生产环境应使用Redis等)
-workflows: dict[str, Workflow] = {}
 
 
 async def get_workflow_manager() -> WorkflowManager:
@@ -33,12 +31,19 @@ async def get_workflow_manager() -> WorkflowManager:
 @router.post("/init")
 async def init_plan(body: PlanInitRequest):
     """初始化计划,生成workflow"""
-    logger.info("初始化Plan", task=body.task[:50], workspace=body.workspace_root)
+    logger.info(
+        "初始化Plan",
+        task=body.task[:50],
+        workspace=body.workspace_root,
+        workspace_id=body.workspace_id,
+    )
 
     manager = await get_workflow_manager()
     workflow = await manager.generate_workflow(body.task, body.context)
     workflow.workspace_root = body.workspace_root
-    workflows[workflow.id] = workflow
+    workflow.workspace_id = body.workspace_id
+    store = get_workflow_store()
+    await store.set(workflow)
 
     logger.info("Plan生成完成", workflow_id=workflow.id, steps_count=len(workflow.steps))
 
@@ -52,15 +57,15 @@ async def init_plan(body: PlanInitRequest):
 @router.post("/refine")
 async def refine_plan(body: PlanRefineRequest):
     """根据用户指令修改计划"""
-    if body.workflow_id not in workflows:
+    store = get_workflow_store()
+    workflow = await store.get(body.workflow_id)
+    if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
-
-    workflow = workflows[body.workflow_id]
     logger.info("修改Plan", workflow_id=body.workflow_id, instruction=body.instruction[:50])
 
     manager = await get_workflow_manager()
     workflow = await manager.refine_workflow(workflow, body.instruction)
-    workflows[body.workflow_id] = workflow
+    await store.set(workflow)
 
     return {
         "workflow_id": workflow.id,
@@ -71,12 +76,12 @@ async def refine_plan(body: PlanRefineRequest):
 @router.post("/confirm")
 async def confirm_plan(body: PlanConfirmRequest):
     """确认计划,准备执行"""
-    if body.workflow_id not in workflows:
+    store = get_workflow_store()
+    workflow = await store.get(body.workflow_id)
+    if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
-
-    workflow = workflows[body.workflow_id]
     workflow.status = "confirmed"
-    workflows[body.workflow_id] = workflow
+    await store.set(workflow)
 
     logger.info("Plan已确认", workflow_id=body.workflow_id)
 
@@ -85,4 +90,3 @@ async def confirm_plan(body: PlanConfirmRequest):
         "status": "confirmed",
         "message": "计划已确认,可以进入Code模式执行",
     }
-

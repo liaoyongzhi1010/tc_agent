@@ -18,37 +18,19 @@ REACT_SYSTEM_PROMPT = """你是一个可信计算领域的专家开发助手，�
 正确示例 - file_write工具:
 ```
 行动: file_write
-输入: {{"path": "/tmp/test.txt", "content": "Hello World"}}
+输入: {{"path": "src/demo.c", "content": "Hello World"}}
 ```
 
 正确示例 - file_read工具:
 ```
 行动: file_read
-输入: {{"path": "/tmp/test.txt"}}
-```
-
-正确示例 - terminal工具:
-```
-行动: terminal
-输入: {{"command": "ls -la", "cwd": "/tmp"}}
+输入: {{"path": "README.md"}}
 ```
 
 正确示例 - crypto_helper工具:
 ```
 行动: crypto_helper
 输入: {{"operation": "aes_gcm_encrypt"}}
-```
-
-正确示例 - docker_build工具(编译TA):
-```
-行动: docker_build
-输入: {{"source_dir": "/workspace/my_ta", "build_type": "ta"}}
-```
-
-正确示例 - docker_build工具(编译CA):
-```
-行动: docker_build
-输入: {{"source_dir": "/workspace/my_ca", "build_type": "ca"}}
 ```
 
 错误示例（不要这样做）:
@@ -71,29 +53,13 @@ REACT_SYSTEM_PROMPT = """你是一个可信计算领域的专家开发助手，�
 最终答案: <向用户展示的完整回答>
 ```
 
-## TA/CA开发完整流程
-开发OP-TEE应用的典型流程：
-1. 使用 ta_generator 生成TA代码框架
-2. 使用 ca_generator 生成对应的CA代码
-3. 使用 crypto_helper 获取加密操作代码模板（如需要）
-   - AES-GCM 推荐直接使用 template="aes_gcm_simple" 生成TA/CA，避免参数布局错误
-4. **优先使用 workflow_runner 完成编译+运行验证**（secure模式需要CA端到端通过）
-5. 如仅需编译，使用 docker_build 编译TA和CA代码（首次编译会自动构建Docker镜像，需要几分钟）
-
 ## 重要提示
 1. 每次只执行一个行动
 2. **只使用工具列表里的工具，不要发明新工具**
 3. **只使用工具定义的参数，不要添加额外参数**
 4. 输入必须是有效的JSON对象，键名与工具参数名完全一致
-5. 仔细分析观察结果再决定下一步
-6. 生成代码时要完整且可运行
-7. **所有文件必须创建在工作区目录下**，使用绝对路径
-8. 优先使用TEE专用工具生成OP-TEE相关代码
-9. **同一任务只允许创建一个项目目录**，后续只在该目录内修改文件
-10. **ta_generator/ca_generator 仅在“创建项目结构”步骤使用一次**
-11. AES任务优先使用 `template="aes_gcm_simple"` 生成TA/CA，再在同一目录内实现细节
-12. **生成代码后，使用workflow_runner进行编译+验证；没有workflow_runner时再用docker_build**
-13. 如需保护已有目录，显式传 `overwrite=false`；默认 `overwrite=true` 会覆盖同名目录
+5. 生成代码时要完整且可运行
+6. **所有文件必须创建在工作区目录下**，使用相对路径或绝对路径（必须位于工作区内）
 """
 
 REACT_STEP_PROMPT = """## 工作区目录
@@ -105,8 +71,20 @@ REACT_STEP_PROMPT = """## 工作区目录
 ## 当前工作流步骤
 {current_step}
 
+## TA目录
+{ta_dir}
+
+## CA目录
+{ca_dir}
+
+## 允许工具
+{allowed_tools}
+
 ## 历史记录
 {history}
 
-请继续执行任务。创建的所有文件必须放在工作区目录下。如果需要使用工具，按格式输出行动；如果任务完成，输出最终答案。
+## 额外信息
+{extra_context}
+
+请继续执行任务。
 """

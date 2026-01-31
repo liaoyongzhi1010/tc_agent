@@ -1,7 +1,5 @@
 """TC Agent 配置管理"""
-import os
-import platform
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 from typing import Optional
 from pathlib import Path
@@ -33,21 +31,25 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
     embedding_api_key: Optional[str] = None
 
+    # 工具包配置
+    tool_packs: str = "core,runner"
+
     # RAG配置
     rag_child_chunk_size: int = 200
     rag_parent_chunk_size: int = 1000
     rag_top_k: int = 5
 
-    # QEMU配置
-    qemu_mode: Optional[str] = None  # simple, secure, auto(None)
-    qemu_test_command: Optional[str] = None
+    # 后端工作区
+    workspace_root: Path = Field(default_factory=lambda: Path("/tmp/tc_agent_workspaces"))
 
     # Agent配置
     agent_max_iterations: int = 30
 
-    class Config:
-        env_file = ".env"
-        env_prefix = "TC_AGENT_"
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_prefix="TC_AGENT_",
+        extra="ignore",
+    )
 
     def get_llm_api_key(self) -> str:
         """获取当前LLM提供商的API Key"""
@@ -73,24 +75,6 @@ class Settings(BaseSettings):
 
 # 全局配置实例
 settings = Settings()
-
-# 自动检测QEMU模式（仅在未显式配置时）
-def _detect_qemu_mode() -> str:
-    if platform.system().lower() == "linux" and os.path.exists("/dev/kvm"):
-        return "secure"
-    return "simple"
-
-
-def _resolve_qemu_mode(value: Optional[str]) -> str:
-    if not value:
-        return _detect_qemu_mode()
-    normalized = value.strip().lower()
-    if normalized in ("simple", "secure"):
-        return normalized
-    return _detect_qemu_mode()
-
-
-settings.qemu_mode = _resolve_qemu_mode(settings.qemu_mode)
 
 # 确保数据目录存在
 settings.data_dir.mkdir(parents=True, exist_ok=True)

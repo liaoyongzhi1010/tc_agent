@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from app.api import ask, plan, code, knowledge
+from app.api import ask, plan, code, knowledge, workspace
 from app.infrastructure.config import settings
 from app.infrastructure.logger import get_logger
 from app.infrastructure.vector_store import get_vector_store
@@ -58,6 +58,7 @@ app.include_router(ask.router, prefix="/ask", tags=["Ask"])
 app.include_router(plan.router, prefix="/plan", tags=["Agent Planning"])
 app.include_router(code.router, prefix="/code", tags=["Agent Execution"])
 app.include_router(knowledge.router, prefix="/knowledge", tags=["Knowledge"])
+app.include_router(workspace.router, prefix="/workspace", tags=["Workspace"])
 
 
 @app.get("/health")

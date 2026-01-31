@@ -24,6 +24,9 @@ httpx>=0.26.0
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
 
+# 生产推荐（工作流存储/队列）
+redis>=5.0.0
+
 # 文档解析
 pypdf>=3.17.0
 python-multipart>=0.0.6

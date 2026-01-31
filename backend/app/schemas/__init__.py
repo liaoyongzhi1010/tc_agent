@@ -11,7 +11,6 @@ from app.schemas.models import (
     PlanRefineRequest,
     PlanConfirmRequest,
     AddDocumentRequest,
-    AddDirectoryRequest,
 )
 
 __all__ = [
@@ -26,5 +25,4 @@ __all__ = [
     "PlanRefineRequest",
     "PlanConfirmRequest",
     "AddDocumentRequest",
-    "AddDirectoryRequest",
 ]

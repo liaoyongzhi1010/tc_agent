@@ -1,0 +1,57 @@
+services:
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      TC_AGENT_HOST: 0.0.0.0
+      TC_AGENT_PORT: 8765
+      TC_AGENT_TOOL_PACKS: core,runner
+      TC_AGENT_WORKSPACE_ROOT: /data/workspaces
+      TC_AGENT_OPTEE_IMAGE: tc-agent/optee-build:4.0
+      TC_AGENT_WORKFLOW_STORE: redis
+      TC_AGENT_REDIS_URL: redis://redis:6379/0
+      TC_AGENT_RUNNER_BACKEND: redis
+    volumes:
+      - tc_agent_workspaces:/data/workspaces
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "8765:8765"
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      TC_AGENT_HOST: 0.0.0.0
+      TC_AGENT_PORT: 8765
+      TC_AGENT_TOOL_PACKS: core,runner
+      TC_AGENT_WORKSPACE_ROOT: /data/workspaces
+      TC_AGENT_OPTEE_IMAGE: tc-agent/optee-build:4.0
+      TC_AGENT_WORKFLOW_STORE: redis
+      TC_AGENT_REDIS_URL: redis://redis:6379/0
+      TC_AGENT_RUNNER_BACKEND: redis
+    command: ["python", "-m", "app.worker.runner_worker"]
+    volumes:
+      - tc_agent_workspaces:/data/workspaces
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - redis
+
+volumes:
+  redis_data:
+  tc_agent_workspaces:

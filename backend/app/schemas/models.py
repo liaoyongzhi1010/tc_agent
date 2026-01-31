@@ -19,6 +19,7 @@ class Workflow(BaseModel):
     status: str = "draft"  # draft | confirmed | running | completed | failed
     current_step: int = 0
     workspace_root: Optional[str] = None
+    workspace_id: Optional[str] = None
 
 
 class RetrievedDoc(BaseModel):
@@ -37,7 +38,7 @@ class ToolResult(BaseModel):
 
 class AgentEvent(BaseModel):
     """Agent事件"""
-    type: str  # thought, action, observation, file_edit, error, complete
+    type: str  # thought, action, observation, file_ops, error, complete
     data: dict
 
 
@@ -62,6 +63,7 @@ class PlanInitRequest(BaseModel):
     task: str
     context: Optional[str] = None
     workspace_root: Optional[str] = None
+    workspace_id: Optional[str] = None
 
 
 class PlanRefineRequest(BaseModel):
@@ -83,8 +85,16 @@ class AddDocumentRequest(BaseModel):
     collection: str = "text"
 
 
-class AddDirectoryRequest(BaseModel):
-    """添加目录请求"""
+class WorkspaceInitResponse(BaseModel):
+    workspace_id: str
+
+
+class WorkspaceFile(BaseModel):
     path: str
-    collection: str = "code"
-    file_patterns: List[str] = Field(default_factory=lambda: ["*.c", "*.h", "*.py"])
+    content: str
+    encoding: Optional[str] = "utf-8"
+
+
+class WorkspaceSyncRequest(BaseModel):
+    workspace_id: str
+    files: List[WorkspaceFile]

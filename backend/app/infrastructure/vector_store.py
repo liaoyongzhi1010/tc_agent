@@ -149,27 +149,6 @@ class VectorStoreManager:
         await retriever.add_documents(documents, metadatas)
         logger.info("文档已添加", collection=collection, count=len(documents))
 
-    async def add_from_directory(
-        self,
-        directory: Path,
-        collection: str,
-        patterns: List[str],
-        extra_metadata: Optional[dict] = None,
-    ) -> int:
-        """从目录添加文件"""
-        return await self._load_directory(
-            directory, collection, patterns, extra_metadata
-        )
-
-    async def add_file(self, file_path: Path, collection: str) -> None:
-        """添加单个文件"""
-        content = file_path.read_text(encoding="utf-8")
-        await self.add_documents(
-            collection=collection,
-            documents=[content],
-            metadatas=[{"source": str(file_path), "filename": file_path.name}],
-        )
-
     async def get_stats(self) -> dict:
         """获取知识库统计信息"""
         stats = {}
